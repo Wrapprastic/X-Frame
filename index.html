@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="X Frame">
+<title>X Frame</title>
+<style>
+  :root {
+    --bg: #f3f3f1;
+    --card: #ffffff;
+    --ink: #141414;
+    --muted: #6b6b6b;
+    --line: #e3e3df;
+    --chip: #ebebe8;
+    --accent: #1f5eff;
+    --accent-ink: #ffffff;
+    --hit: #17703f;
+    --hit-bg: #e2f3e8;
+    --miss: #b3261e;
+    --miss-bg: #fbe6e4;
+    --note: #7a5200;
+    --note-bg: #fff1d1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0e10;
+      --card: #1a1a1d;
+      --ink: #f2f2f2;
+      --muted: #9b9ba1;
+      --line: #2b2b30;
+      --chip: #29292e;
+      --accent: #4f7fff;
+      --accent-ink: #ffffff;
+      --hit: #63d69a;
+      --hit-bg: #15301f;
+      --miss: #ff8d84;
+      --miss-bg: #3a1917;
+      --note: #ffd27a;
+      --note-bg: #362a0f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 17px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  button, input { font: inherit; color: inherit; }
+  button {
+    border: 0;
+    background: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .wrap {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 0 16px calc(env(safe-area-inset-bottom) + 40px);
+  }
+  .top {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: calc(env(safe-area-inset-top) + 8px) 0 8px;
+    background: var(--bg);
+  }
+  .top .mid { text-align: center; min-width: 0; }
+  .top .mid b { display: block; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .top .right { justify-self: end; }
+  .eyebrow { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 28px; margin: 8px 0 4px; }
+  .link { color: var(--accent); font-weight: 600; min-height: 44px; padding: 0 4px; }
+  .btn {
+    min-height: 48px;
+    padding: 0 18px;
+    border-radius: 12px;
+    background: var(--chip);
+    font-weight: 600;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); }
+  .btn.big { width: 100%; min-height: 60px; font-size: 19px; margin-top: 12px; }
+  .btn.armed { background: var(--miss); color: #fff; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 16px;
+    margin: 12px 0;
+  }
+  .card h3 { margin: 0 0 2px; font-size: 22px; }
+  .note {
+    background: var(--note-bg);
+    color: var(--note);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin: 12px 0;
+    font-size: 15px;
+  }
+  .week-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 56px;
+    border-top: 1px solid var(--line);
+  }
+  .week-row:first-of-type { border-top: 0; }
+  .week-row .name { flex: 1; min-width: 0; }
+  .week-row .btn { min-height: 44px; padding: 0 14px; }
+  .pill {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--chip);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .pill.hit, .badge.hit, .badge.first { background: var(--hit-bg); color: var(--hit); }
+  .pill.miss, .badge.miss { background: var(--miss-bg); color: var(--miss); }
+  .pill.now { background: var(--accent); color: var(--accent-ink); }
+  .ex-head { margin-bottom: 4px; }
+  .ex-head + .ex-head { margin-top: 12px; }
+  .ex-name { font-size: 19px; font-weight: 700; }
+  .tag {
+    display: inline-block;
+    min-width: 28px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--muted);
+    margin-right: 6px;
+  }
+  .meta { color: var(--muted); font-size: 15px; }
+  .stall { margin-top: 6px; }
+  .set {
+    display: grid;
+    grid-template-columns: 56px 1fr auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 60px;
+    border-top: 1px solid var(--line);
+  }
+  .set:first-of-type { margin-top: 8px; }
+  .set .label { color: var(--muted); font-size: 14px; line-height: 1.2; }
+  .set.next .label { color: var(--accent); font-weight: 700; }
+  .set .vals {
+    text-align: left;
+    min-height: 56px;
+    font-size: 19px;
+    font-weight: 600;
+    padding: 0;
+  }
+  .set .vals small { display: block; font-size: 13px; font-weight: 500; color: var(--note); }
+  .set.logged .vals { color: var(--muted); font-weight: 500; }
+  .set .done { min-width: 84px; }
+  .badge {
+    min-width: 84px;
+    text-align: center;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 12px 0;
+    border-radius: 12px;
+  }
+  .editor { grid-column: 1 / -1; padding: 4px 0 14px; }
+  .lab { font-size: 14px; color: var(--muted); margin: 10px 0 4px; }
+  .stepper { display: grid; grid-template-columns: 64px 1fr 64px; gap: 8px; }
+  .stepper button { min-height: 56px; border-radius: 12px; background: var(--chip); font-size: 26px; font-weight: 600; }
+  .stepper input {
+    min-width: 0;
+    text-align: center;
+    font-size: 24px;
+    font-weight: 700;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg);
+  }
+  .chips { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+  .chips button { min-height: 48px; border-radius: 12px; background: var(--chip); font-weight: 600; }
+  .chips button.on { background: var(--accent); color: var(--accent-ink); }
+  .toggle { display: flex; align-items: center; gap: 10px; min-height: 48px; margin-top: 8px; width: 100%; text-align: left; }
+  .toggle .box {
+    width: 26px; height: 26px; border-radius: 7px; border: 2px solid var(--muted);
+    display: grid; place-items: center; font-size: 16px; font-weight: 800; flex: none;
+  }
+  .toggle.on .box { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .actions .primary { flex: 1; }
+  .sum-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .sum-row:first-of-type { border-top: 0; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; margin: 8px 0 4px; }
+  .stats b { display: block; font-size: 28px; }
+  select {
+    font: inherit; color: inherit; width: 100%; min-height: 52px; padding: 0 12px;
+    border-radius: 12px; border: 1px solid var(--line); background: var(--bg);
+  }
+  #toast {
+    position: fixed; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 16px);
+    max-width: 528px; margin: 0 auto; padding: 14px 16px; border-radius: 12px;
+    background: var(--ink); color: var(--bg); font-weight: 600; text-align: center;
+    opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: none; z-index: 10;
+  }
+  #toast.show { opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="seed.js"></script>
+<script src="engine.js"></script>
+<script>
+'use strict';
+
+// ---------- Lookups over the seed data ----------
+
+const BLOCK_NAMES = {
+  phase1: 'Phase 1',
+  phase2: 'Phase 2',
+  maintenance: 'Maintenance',
+  'phase1-no-intensifiers': 'Phase 1, no intensifiers',
+};
+const exerciseById = Object.fromEntries(SEED.exercises.map((e) => [e.id, e]));
+const templateById = Object.fromEntries(SEED.sessions.map((t) => [t.id, t]));
+
+// ---------- Storage ----------
+// Everything is loaded into S at launch and written through to IndexedDB the
+// moment it changes, so a killed app loses nothing that was logged.
+
+const S = { program: null, blocks: [], sessions: [], sets: [] };
+let db;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('x-frame', 1);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      d.createObjectStore('meta', { keyPath: 'key' });
+      for (const name of ['blocks', 'sessions', 'sets']) d.createObjectStore(name, { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function getAll(store) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store).objectStore(store).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function write(store, op, value) {
+  const tx = db.transaction(store, 'readwrite');
+  tx.objectStore(store)[op](value);
+  tx.onerror = () => toast('Could not save. ' + (tx.error ? tx.error.message : ''));
+}
+const save = (store, obj) => write(store, 'put', obj);
+const remove = (store, id) => write(store, 'delete', id);
+
+async function load() {
+  db = await openDb();
+  const [meta, blocks, sessions, sets] = await Promise.all(
+    ['meta', 'blocks', 'sessions', 'sets'].map(getAll));
+  S.blocks = blocks;
+  S.sessions = sessions;
+  S.sets = sets;
+  S.program = meta.find((m) => m.key === 'program') || null;
+  if (!S.program) {
+    const b = newBlock('phase1');
+    S.program = { key: 'program', blockId: b.id, week: 1, activeSessionId: null, complete: false };
+    save('meta', S.program);
+  }
+}
+
+function newBlock(type) {
+  const b = { id: uid(), type, lengthWeeks: 8, startedAt: Date.now() };
+  S.blocks.push(b);
+  save('blocks', b);
+  return b;
+}
+
+// ---------- Small helpers ----------
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtKg = (w) => (w == null ? '—' : String(Math.round(w * 100) / 100));
+const fmtRir = (r) => (r >= 5 ? '5+' : String(r));
+const fmtRange = ([lo, hi]) => (lo === hi ? String(lo) : `${lo}–${hi}`);
+
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+const blockById = (id) => S.blocks.find((b) => b.id === id);
+const sessionById = (id) => S.sessions.find((s) => s.id === id);
+const currentBlock = () => blockById(S.program.blockId);
+const activeSession = () => (S.program.activeSessionId ? sessionById(S.program.activeSessionId) : null);
+const usesPhase2Labels = (type) => type === 'phase2' || type === 'maintenance';
+const slotLabel = (slot, type) => (usesPhase2Labels(type) ? slot.labelP2 : slot.label);
+const weekTitle = (block, week) =>
+  `${BLOCK_NAMES[block.type]} · Week ${week}${Engine.isDeloadWeek(week) ? ' · Deload' : ''}`;
+
+// Swaps arrive in a later build; until then every slot runs its default.
+const exerciseFor = (slot) => exerciseById[slot.defaultExercise];
+
+// ---------- Program state ----------
+
+function statusOf(templateId) {
+  const logs = S.sessions.filter((s) =>
+    s.blockId === S.program.blockId && s.week === S.program.week && s.templateId === templateId);
+  for (const status of ['finished', 'skipped', 'in-progress']) {
+    if (logs.some((l) => l.status === status)) return status;
+  }
+  return 'todo';
+}
+
+const nextTemplate = () => SEED.sessions.find((t) => statusOf(t.id) === 'todo');
+
+// A week ends when all six sessions are finished or skipped. After Phase 1
+// week 8 comes Phase 2 week 1; after Phase 2 week 8 the program is complete.
+function advanceIfWeekDone() {
+  const p = S.program;
+  const done = SEED.sessions.every((t) => ['finished', 'skipped'].includes(statusOf(t.id)));
+  if (!done) return;
+  const b = currentBlock();
+  if (p.week < b.lengthWeeks) {
+    p.week += 1;
+  } else if (b.type === 'phase1') {
+    p.blockId = newBlock('phase2').id;
+    p.week = 1;
+  } else {
+    p.complete = true;
+  }
+  save('meta', p);
+}
+
+function startSession(templateId) {
+  if (activeSession()) return;
+  const s = {
+    id: uid(),
+    templateId,
+    blockId: S.program.blockId,
+    week: S.program.week,
+    startedAt: Date.now(),
+    finishedAt: null,
+    status: 'in-progress',
+    weightOverrides: {},
+  };
+  S.sessions.push(s);
+  save('sessions', s);
+  S.program.activeSessionId = s.id;
+  save('meta', S.program);
+  ui.drafts = {};
+  ui.openKey = null;
+  show('session', { scrollToNext: true });
+}
+
+function skipSession(templateId) {
+  const now = Date.now();
+  const s = {
+    id: uid(), templateId, blockId: S.program.blockId, week: S.program.week,
+    startedAt: now, finishedAt: now, status: 'skipped', weightOverrides: {},
+  };
+  S.sessions.push(s);
+  save('sessions', s);
+  advanceIfWeekDone();
+  toast(`${templateById[templateId].name} skipped`);
+  render();
+}
+
+// ---------- Targets ----------
+
+// First work sets of one slot and exercise, oldest first, in the shape
+// Engine.replayBaseline takes. Phase 2's first entry after Phase 1 is marked
+// so its target resets to the bottom of the range.
+function firstSetEntries(slotId, exerciseId) {
+  const list = S.sets
+    .filter((x) => x.kind === 'work' && x.setIndex === 0 && x.slotId === slotId && x.exerciseId === exerciseId)
+    .sort((a, b) => a.loggedAt - b.loggedAt);
+  let prevType = null;
+  return list.map((x) => {
+    const session = sessionById(x.sessionId);
+    const type = blockById(session.blockId).type;
+    const entry = {
+      weight: x.weight,
+      reps: x.reps,
+      makeBaseline: !!x.makeBaseline,
+      phaseStart: type === 'phase2' && prevType !== null && prevType !== 'phase2',
+      sessionId: x.sessionId,
+      startedAt: session.startedAt,
+      type,
+    };
+    prevType = type;
+    return entry;
+  });
+}
+
+// Everything a slot needs on the session screen: the exercise, its shared
+// target for every set, the target RIR, how many sets, and whether it stalled.
+// The target comes from sessions before this one only, so logging set 1
+// today never moves the target for sets 2 and on.
+function planFor(slot, session) {
+  const block = blockById(session.blockId);
+  const ex = exerciseFor(slot);
+  const prior = firstSetEntries(slot.id, ex.id).filter((e) => e.startedAt < session.startedAt);
+  const { baseline, results } = Engine.replayBaseline(prior, slot.repLow, slot.repHigh, ex.incrementKg);
+  const deload = Engine.isDeloadWeek(session.week);
+  const lastType = prior.length ? prior[prior.length - 1].type : null;
+  let target;
+  if (deload) target = Engine.deloadTarget(baseline, slot.repLow);
+  else if (block.type === 'phase2' && lastType && lastType !== 'phase2') target = Engine.phaseStartTarget(baseline, slot.repLow);
+  else target = Engine.nextTarget(baseline, slot.repLow, slot.repHigh, ex.incrementKg);
+  return {
+    slot,
+    ex,
+    target,
+    rir: Engine.targetRir(SEED.rir, block.type, session.week, ex.type),
+    n: Engine.setsFor(slot, block.type, session.week),
+    kind: deload ? 'deload' : 'work',
+    label: slotLabel(slot, block.type),
+    stalled: Engine.isStalled(results.map((r) => r.result)),
+  };
+}
+
+function plansFor(session) {
+  return templateById[session.templateId].slots
+    .map((slot) => planFor(slot, session))
+    .filter((p) => p.n > 0);
+}
+
+// Slots sharing a letter (D1, D2) alternate set by set, so they share a card.
+function groupPlans(plans) {
+  const groups = [];
+  for (const p of plans) {
+    const last = groups[groups.length - 1];
+    if (last && last[0].label[0] === p.label[0]) last.push(p);
+    else groups.push([p]);
+  }
+  return groups;
+}
+
+const setLogFor = (sessionId, slotId, i) =>
+  S.sets.find((x) => x.sessionId === sessionId && x.slotId === slotId && x.setIndex === i);
+
+// The most recent earlier session's sets for this slot and exercise, hits and
+// misses alike.
+function lastTime(plan, session) {
+  let best = null;
+  for (const x of S.sets) {
+    if (x.slotId !== plan.slot.id || x.exerciseId !== plan.ex.id || x.sessionId === session.id) continue;
+    const s = sessionById(x.sessionId);
+    if (s.startedAt >= session.startedAt) continue;
+    if (!best || s.startedAt > best.startedAt) best = s;
+  }
+  if (!best) return null;
+  return S.sets
+    .filter((x) => x.sessionId === best.id && x.slotId === plan.slot.id)
+    .sort((a, b) => a.setIndex - b.setIndex);
+}
+
+// ---------- UI state ----------
+
+const ui = {
+  view: 'home',
+  openKey: null, // the set row whose editor is open, as "slotId:setIndex"
+  drafts: {}, // unsaved edits per set row
+  armed: null, // a button waiting for its confirming second tap
+  summary: null,
+  scrollToNext: false,
+};
+
+function show(view, opts = {}) {
+  ui.view = view;
+  ui.armed = null;
+  ui.scrollToNext = !!opts.scrollToNext;
+  render();
+  if (!opts.keepScroll && !ui.scrollToNext) window.scrollTo(0, 0);
+}
+
+// Two-tap confirm in place of a dialog: the first tap arms the button.
+function arm(id) {
+  if (ui.armed === id) { ui.armed = null; return true; }
+  ui.armed = id;
+  render();
+  return false;
+}
+
+function draftFor(plan, session, i) {
+  const key = `${plan.slot.id}:${i}`;
+  if (ui.drafts[key]) return ui.drafts[key];
+  const log = setLogFor(session.id, plan.slot.id, i);
+  if (log) return { weight: log.weight, reps: log.reps, rir: log.rir, applyRest: false };
+  let weight = session.weightOverrides[plan.slot.id];
+  if (weight == null) weight = plan.target.weight;
+  // First time on a slot there is no target weight, so later sets take the
+  // weight just logged on an earlier set.
+  if (weight == null) {
+    for (let j = i - 1; j >= 0 && weight == null; j--) {
+      const earlier = setLogFor(session.id, plan.slot.id, j);
+      if (earlier) weight = earlier.weight;
+    }
+  }
+  return {
+    weight,
+    reps: plan.target.reps,
+    rir: Engine.prefillRir(plan.rir),
+    applyRest: false,
+  };
+}
+
+// ---------- Views ----------
+
+function render() {
+  const app = document.getElementById('app');
+  if (ui.view === 'session' && activeSession()) app.innerHTML = sessionView();
+  else if (ui.view === 'summary' && ui.summary) app.innerHTML = summaryView();
+  else if (ui.view === 'settings') app.innerHTML = settingsView();
+  else { ui.view = 'home'; app.innerHTML = homeView(); }
+  if (ui.scrollToNext) {
+    ui.scrollToNext = false;
+    const next = app.querySelector('.set.next');
+    if (next) next.scrollIntoView({ block: 'center' });
+  }
+}
+
+function homeView() {
+  const block = currentBlock();
+  const active = activeSession();
+  const next = nextTemplate();
+  let hero;
+  if (S.program.complete) {
+    hero = `<div class="card"><h3>Program complete</h3>
+      <p class="meta">Phase 2 is finished. Choosing what runs next comes in a later build. Settings can move you to any phase and week.</p></div>`;
+  } else if (active) {
+    hero = `<div class="card"><div class="eyebrow">In progress</div>
+      <h3>${esc(templateById[active.templateId].name)}</h3>
+      <button class="btn primary big" data-act="resume">Resume</button></div>`;
+  } else if (next) {
+    const count = plansFor({ templateId: next.id, blockId: block.id, week: S.program.week, startedAt: Infinity, id: '' }).length;
+    hero = `<div class="card"><div class="eyebrow">Up next</div>
+      <h3>${esc(next.name)}</h3>
+      <div class="meta">${count} exercises</div>
+      <button class="btn primary big" data-act="start" data-arg="${next.id}">Start</button></div>`;
+  }
+
+  const rows = SEED.sessions.map((t) => {
+    const st = statusOf(t.id);
+    let right = '';
+    if (st === 'finished') right = '<span class="pill hit">Done</span>';
+    else if (st === 'skipped') right = '<span class="pill">Skipped</span>';
+    else if (st === 'in-progress') right = '<span class="pill now">In progress</span>';
+    else if (!active && !S.program.complete) {
+      const armed = ui.armed === 'skip:' + t.id;
+      right = `<button class="btn ${armed ? 'armed' : ''}" data-act="skip" data-arg="${t.id}">${armed ? 'Skip it' : 'Skip'}</button>
+        <button class="btn" data-act="start" data-arg="${t.id}">Start</button>`;
+    }
+    return `<div class="week-row"><div class="name">${esc(t.name)}</div>${right}</div>`;
+  }).join('');
+
+  return `<div class="wrap">
+    <div class="top"><div class="eyebrow">X Frame</div><div></div>
+      <button class="link right" data-act="settings">Settings</button></div>
+    <h2>${esc(weekTitle(block, S.program.week))}</h2>
+    ${hero || ''}
+    <div class="card"><div class="eyebrow">This week</div>${rows}</div>
+  </div>`;
+}
+
+function sessionView() {
+  const session = activeSession();
+  const block = blockById(session.blockId);
+  const plans = plansFor(session);
+
+  // The next set is the first unlogged one in template order, alternating
+  // within pairs.
+  let nextKey = null;
+  const groups = groupPlans(plans);
+  for (const g of groups) {
+    for (const i of rowOrder(g)) {
+      const [p, idx] = i;
+      if (!nextKey && !setLogFor(session.id, p.slot.id, idx)) nextKey = `${p.slot.id}:${idx}`;
+    }
+  }
+
+  const notes = [];
+  if (block.type === 'phase1' && session.week === 1) {
+    notes.push('Settle on your form and keep it for the rest of the program, so later gains are real.');
+  }
+  if (Engine.isDeloadWeek(session.week)) {
+    notes.push('Deload week: half the sets at your baseline weight. These sets never change a baseline.');
+  }
+
+  const unlogged = plans.some((p) => [...Array(p.n).keys()].some((i) => !setLogFor(session.id, p.slot.id, i)));
+  const finishArmed = ui.armed === 'finish';
+
+  return `<div class="wrap">
+    <div class="top">
+      <div><button class="link" data-act="home">‹ Home</button></div>
+      <div class="mid"><b>${esc(templateById[session.templateId].name)}</b>
+        <span class="eyebrow">${esc(weekTitle(block, session.week))}</span></div>
+      <div class="right"><button class="btn ${finishArmed ? 'armed' : 'primary'}" data-act="finish" data-arg="${unlogged ? 'confirm' : ''}">${finishArmed ? 'Finish now' : 'Finish'}</button></div>
+    </div>
+    ${notes.map((n) => `<div class="note">${esc(n)}</div>`).join('')}
+    ${groups.map((g) => groupCard(g, session, nextKey)).join('')}
+  </div>`;
+}
+
+// Rows of a group as [plan, setIndex], alternating set by set within a pair.
+function rowOrder(group) {
+  const rows = [];
+  const most = Math.max(...group.map((p) => p.n));
+  for (let i = 0; i < most; i++) for (const p of group) if (i < p.n) rows.push([p, i]);
+  return rows;
+}
+
+function groupCard(group, session, nextKey) {
+  const heads = group.map((p) => {
+    const last = lastTime(p, session);
+    const lastText = last ? last.map((x) => `${fmtKg(x.weight)}×${x.reps}`).join(', ') : 'first time';
+    return `<div class="ex-head">
+      <div class="ex-name"><span class="tag">${esc(p.label)}</span>${esc(p.ex.name)}</div>
+      <div class="meta">${p.slot.repLow}–${p.slot.repHigh} reps · RIR ${fmtRange(p.rir)} · Last: ${esc(lastText)}</div>
+      ${p.stalled ? '<div class="pill miss stall">Stalled: 3 misses in a row</div>' : ''}
+    </div>`;
+  }).join('');
+  const paired = group.length > 1;
+  const rows = rowOrder(group).map(([p, i]) => setRow(p, session, i, paired, nextKey)).join('');
+  return `<div class="card">${heads}${rows}</div>`;
+}
+
+function setRow(plan, session, i, paired, nextKey) {
+  const key = `${plan.slot.id}:${i}`;
+  const log = setLogFor(session.id, plan.slot.id, i);
+  const open = ui.openKey === key;
+  const d = draftFor(plan, session, i);
+  const label = `${paired ? `<span class="tag">${esc(plan.label)}</span><br>` : ''}Set ${i + 1}`;
+  let vals, right;
+  if (log && !open) {
+    const result = Engine.judgeSet(plan.target, log, plan.slot.repLow);
+    const easy = Engine.easierThanPlanned(result, log.rir, plan.rir);
+    vals = `${fmtKg(log.weight)} kg × ${log.reps} · RIR ${fmtRir(log.rir)}${easy ? '<small>Easier than planned</small>' : ''}`;
+    const word = { hit: 'Hit', miss: 'Miss', first: 'Logged' }[result];
+    right = `<div class="badge ${result}">${word}</div>`;
+  } else {
+    vals = `${d.weight == null ? '—' : fmtKg(d.weight)} kg × ${d.reps} · RIR ${fmtRir(d.rir)}`;
+    right = log
+      ? '<div></div>'
+      : `<button class="btn primary done" data-act="done" data-key="${key}">${d.weight == null ? 'Enter' : 'Done'}</button>`;
+  }
+  const cls = ['set', log ? 'logged' : '', key === nextKey ? 'next' : ''].join(' ');
+  return `<div class="${cls}">
+    <div class="label">${label}</div>
+    <button class="vals" data-act="open" data-key="${key}">${vals}</button>
+    ${right}
+    ${open ? editor(plan, session, i, d, log) : ''}
+  </div>`;
+}
+
+function editor(plan, session, i, d, log) {
+  const key = `${plan.slot.id}:${i}`;
+  const laterUnlogged = [...Array(plan.n).keys()].some((j) => j > i && !setLogFor(session.id, plan.slot.id, j));
+  const chips = [0, 1, 2, 3, 4, 5].map((r) =>
+    `<button class="${d.rir === r ? 'on' : ''}" data-act="rir" data-key="${key}" data-arg="${r}">${fmtRir(r)}</button>`).join('');
+  const delArmed = ui.armed === 'del:' + key;
+  return `<div class="editor">
+    <div class="lab">Weight (kg) · steps of ${fmtKg(plan.ex.incrementKg)}</div>
+    <div class="stepper">
+      <button data-act="w-" data-key="${key}" aria-label="Less weight">−</button>
+      <input data-field="weight" data-key="${key}" inputmode="decimal" value="${d.weight == null ? '' : fmtKg(d.weight)}" placeholder="kg" aria-label="Weight in kg">
+      <button data-act="w+" data-key="${key}" aria-label="More weight">+</button>
+    </div>
+    <div class="lab">Reps · target ${plan.target.reps}</div>
+    <div class="stepper">
+      <button data-act="r-" data-key="${key}" aria-label="Fewer reps">−</button>
+      <input data-field="reps" data-key="${key}" inputmode="numeric" value="${d.reps}" aria-label="Reps">
+      <button data-act="r+" data-key="${key}" aria-label="More reps">+</button>
+    </div>
+    <div class="lab">Reps in reserve · target ${fmtRange(plan.rir)}</div>
+    <div class="chips">${chips}</div>
+    ${laterUnlogged ? `<button class="toggle ${d.applyRest ? 'on' : ''}" data-act="apply" data-key="${key}">
+      <span class="box">${d.applyRest ? '✓' : ''}</span>Use this weight for the remaining sets</button>` : ''}
+    <div class="actions">
+      <button class="btn primary" data-act="done" data-key="${key}">${log ? 'Save' : 'Log set'}</button>
+      ${log ? `<button class="btn ${delArmed ? 'armed' : ''}" data-act="del" data-key="${key}">${delArmed ? 'Delete set' : 'Delete'}</button>` : ''}
+      <button class="btn" data-act="cancel" data-key="${key}">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function summaryView() {
+  const s = ui.summary;
+  const list = (items) => items.map((x) => `<div class="sum-row"><span>${esc(x[0])}</span><span class="meta">${esc(x[1])}</span></div>`).join('');
+  return `<div class="wrap">
+    <div class="top"><div></div><div class="mid"><b>${esc(s.name)} finished</b></div><div></div></div>
+    <div class="card">
+      <div class="stats">
+        <div><b>${s.hits}</b><span class="meta">Hits</span></div>
+        <div><b>${s.misses}</b><span class="meta">Misses</span></div>
+        <div><b>${s.firsts}</b><span class="meta">First logs</span></div>
+      </div>
+    </div>
+    ${s.baselines.length ? `<div class="card"><div class="eyebrow">New baselines</div>${list(s.baselines)}</div>` : ''}
+    ${s.stalls.length ? `<div class="card"><div class="eyebrow">Stalled</div>${list(s.stalls)}</div>` : ''}
+    <button class="btn primary big" data-act="summary-done">Done</button>
+  </div>`;
+}
+
+function settingsView() {
+  const block = currentBlock();
+  const active = activeSession();
+  const types = ['phase1', 'phase2'];
+  const typeOpts = types.map((t) => `<option value="${t}" ${block.type === t ? 'selected' : ''}>${BLOCK_NAMES[t]}</option>`).join('');
+  const weekOpts = [1, 2, 3, 4, 5, 6, 7, 8].map((w) => `<option value="${w}" ${S.program.week === w ? 'selected' : ''}>Week ${w}</option>`).join('');
+  return `<div class="wrap">
+    <div class="top"><div><button class="link" data-act="home">‹ Home</button></div><div class="mid"><b>Settings</b></div><div></div></div>
+    <div class="card">
+      <div class="eyebrow">Move to a phase and week</div>
+      <p class="meta">For restarts or corrections. Your logged sets and baselines are kept.</p>
+      ${active ? '<div class="note">Finish the session in progress first.</div>' : ''}
+      <div class="lab">Phase</div><select id="set-type" ${active ? 'disabled' : ''}>${typeOpts}</select>
+      <div class="lab">Week</div><select id="set-week" ${active ? 'disabled' : ''}>${weekOpts}</select>
+      <button class="btn primary big" data-act="settings-save" ${active ? 'disabled' : ''}>Move</button>
+    </div>
+  </div>`;
+}
+
+// ---------- Actions ----------
+
+function planForKey(key) {
+  const session = activeSession();
+  const [slotId, idx] = key.split(':');
+  const slot = templateById[session.templateId].slots.find((s) => s.id === slotId);
+  return { session, plan: planFor(slot, session), i: Number(idx) };
+}
+
+function editDraft(key, change) {
+  const { session, plan, i } = planForKey(key);
+  const d = { ...draftFor(plan, session, i) };
+  change(d, plan);
+  ui.drafts[key] = d;
+  ui.openKey = key;
+  render();
+}
+
+function logSet(key) {
+  const { session, plan, i } = planForKey(key);
+  const d = draftFor(plan, session, i);
+  if (d.weight == null || !(d.weight > 0) || !(d.reps >= 0)) {
+    ui.openKey = key;
+    render();
+    toast('Enter the weight you lifted');
+    return;
+  }
+  const result = Engine.judgeSet(plan.target, d, plan.slot.repLow);
+  const existing = setLogFor(session.id, plan.slot.id, i);
+  const rec = existing
+    ? { ...existing, weight: d.weight, reps: d.reps, rir: d.rir, result }
+    : {
+        id: uid(),
+        sessionId: session.id,
+        slotId: plan.slot.id,
+        exerciseId: plan.ex.id,
+        setIndex: i,
+        kind: plan.kind,
+        targetWeight: plan.target.weight,
+        targetReps: plan.target.reps,
+        targetRir: plan.rir,
+        weight: d.weight,
+        reps: d.reps,
+        rir: d.rir,
+        result,
+        loggedAt: Date.now(),
+        makeBaseline: false,
+      };
+  if (existing) S.sets[S.sets.indexOf(existing)] = rec;
+  else S.sets.push(rec);
+  save('sets', rec);
+  if (d.applyRest) {
+    session.weightOverrides = { ...session.weightOverrides, [plan.slot.id]: d.weight };
+    // Unlogged drafts for this slot pick up the new weight.
+    for (const k of Object.keys(ui.drafts)) {
+      if (k.startsWith(plan.slot.id + ':') && k !== key) delete ui.drafts[k];
+    }
+    save('sessions', session);
+  }
+  delete ui.drafts[key];
+  ui.openKey = null;
+  render();
+}
+
+function deleteSet(key) {
+  const { session, plan, i } = planForKey(key);
+  const log = setLogFor(session.id, plan.slot.id, i);
+  if (!log) return;
+  S.sets.splice(S.sets.indexOf(log), 1);
+  remove('sets', log.id);
+  delete ui.drafts[key];
+  ui.openKey = null;
+  render();
+}
+
+function finishSession() {
+  const session = activeSession();
+  const plans = plansFor(session);
+  const logs = S.sets.filter((x) => x.sessionId === session.id);
+  const summary = {
+    name: templateById[session.templateId].name,
+    hits: 0, misses: 0, firsts: 0, baselines: [], stalls: [],
+  };
+  for (const p of plans) {
+    for (const x of logs.filter((l) => l.slotId === p.slot.id)) {
+      const r = Engine.judgeSet(p.target, x, p.slot.repLow);
+      summary[{ hit: 'hits', miss: 'misses', first: 'firsts' }[r]] += 1;
+    }
+    if (p.kind !== 'work') continue;
+    const first = setLogFor(session.id, p.slot.id, 0);
+    if (!first) continue;
+    const entries = firstSetEntries(p.slot.id, p.ex.id).filter((e) => e.startedAt <= session.startedAt);
+    const { baseline, results } = Engine.replayBaseline(entries, p.slot.repLow, p.slot.repHigh, p.ex.incrementKg);
+    if (results[results.length - 1].result !== 'miss') {
+      summary.baselines.push([p.ex.name, `${fmtKg(baseline.weight)} kg × ${baseline.reps}`]);
+    }
+    if (Engine.isStalled(results.map((r) => r.result))) summary.stalls.push([p.ex.name, '3 misses in a row']);
+  }
+  session.status = 'finished';
+  session.finishedAt = Date.now();
+  save('sessions', session);
+  S.program.activeSessionId = null;
+  save('meta', S.program);
+  advanceIfWeekDone();
+  ui.summary = summary;
+  ui.drafts = {};
+  ui.openKey = null;
+  show('summary');
+}
+
+function moveTo(type, week) {
+  if (activeSession()) return;
+  if (type !== currentBlock().type) S.program.blockId = newBlock(type).id;
+  S.program.week = week;
+  S.program.complete = false;
+  save('meta', S.program);
+  toast(`Moved to ${BLOCK_NAMES[type]} · Week ${week}`);
+  show('home');
+}
+
+document.addEventListener('click', (ev) => {
+  const el = ev.target.closest('[data-act]');
+  if (!el || el.disabled) return;
+  const { act, key, arg } = el.dataset;
+  if (ui.armed && !['skip', 'finish', 'del'].includes(act)) ui.armed = null;
+  switch (act) {
+    case 'start': startSession(arg); break;
+    case 'resume': show('session', { scrollToNext: true }); break;
+    case 'skip': if (arm('skip:' + arg)) skipSession(arg); break;
+    case 'home': show('home'); break;
+    case 'settings': show('settings'); break;
+    case 'settings-save':
+      moveTo(document.getElementById('set-type').value, Number(document.getElementById('set-week').value));
+      break;
+    case 'finish': if (!arg || arm('finish')) finishSession(); break;
+    case 'summary-done': ui.summary = null; show('home'); break;
+    case 'open':
+      if (ui.openKey === key) { ui.openKey = null; } else { ui.openKey = key; }
+      render();
+      break;
+    case 'cancel': delete ui.drafts[key]; ui.openKey = null; render(); break;
+    case 'done': logSet(key); break;
+    case 'del': if (arm('del:' + key)) deleteSet(key); break;
+    case 'w-': editDraft(key, (d, p) => { d.weight = Math.max(0, Engine.roundDownToIncrement((d.weight || 0) - p.ex.incrementKg, p.ex.incrementKg)); }); break;
+    case 'w+': editDraft(key, (d, p) => { d.weight = Engine.roundDownToIncrement((d.weight || 0) + p.ex.incrementKg, p.ex.incrementKg); }); break;
+    case 'r-': editDraft(key, (d) => { d.reps = Math.max(0, d.reps - 1); }); break;
+    case 'r+': editDraft(key, (d) => { d.reps += 1; }); break;
+    case 'rir': editDraft(key, (d) => { d.rir = Number(arg); }); break;
+    case 'apply': editDraft(key, (d) => { d.applyRest = !d.applyRest; }); break;
+  }
+});
+
+// Typed values update the draft without a re-render, so the keyboard stays up.
+document.addEventListener('input', (ev) => {
+  const el = ev.target;
+  if (!el.dataset.field) return;
+  const { session, plan, i } = planForKey(el.dataset.key);
+  const d = { ...draftFor(plan, session, i) };
+  const v = parseFloat(el.value.replace(',', '.'));
+  if (el.dataset.field === 'weight') d.weight = Number.isFinite(v) ? v : null;
+  else d.reps = Number.isFinite(v) ? Math.round(v) : 0;
+  ui.drafts[el.dataset.key] = d;
+});
+
+load().then(() => {
+  if (activeSession()) show('session', { scrollToNext: true });
+  else render();
+}).catch((err) => {
+  document.getElementById('app').innerHTML =
+    `<div class="wrap"><div class="card"><h3>X Frame could not start</h3><p class="meta">${esc(err.message || err)}</p></div></div>`;
+});
+</script>
+</body>
+</html>

@@ -16,6 +16,7 @@ say so and ask rather than quietly deviating.
 
 - An offline web app installed to the iPhone Home Screen: plain HTML, CSS and
   JavaScript, no framework, no bundler, no build step.
+- `index.html`: the whole app, with inline CSS and JavaScript.
 - `seed.js`: the program templates, RIR table and exercise library, loaded as a
   classic script. Program changes go here, not in code.
 - `engine.js`: the progression engine as pure functions with no DOM or storage
