@@ -467,7 +467,36 @@ function tickTimer() {
 }
 
 setInterval(tickTimer, 250);
-document.addEventListener('visibilitychange', tickTimer);
+
+// ---------- Screen wake lock ----------
+// While a session is in progress the screen stays on, so auto-lock never
+// cuts off the rest timer. iOS drops the lock whenever the app is hidden, so
+// it is asked for again on every return and every tap. Where the API is
+// missing (iOS before 16.4), nothing happens.
+
+let wakeLock = null;
+
+function syncWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  const want = !!(S.program && activeSession()) && document.visibilityState === 'visible';
+  if (want && !wakeLock) {
+    wakeLock = 'pending';
+    navigator.wakeLock.request('screen').then((lock) => {
+      wakeLock = lock;
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+      syncWakeLock(); // releases it again if the session ended while waiting
+    }).catch(() => { wakeLock = null; });
+  } else if (!want && wakeLock && wakeLock !== 'pending') {
+    const lock = wakeLock;
+    wakeLock = null;
+    lock.release().catch(() => {});
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  tickTimer();
+  syncWakeLock();
+});
 
 // ---------- Program state ----------
 
@@ -683,6 +712,7 @@ function render() {
   else if (ui.view === 'summary' && ui.summary) app.innerHTML = summaryView();
   else if (ui.view === 'settings') app.innerHTML = settingsView();
   else { ui.view = 'home'; app.innerHTML = homeView(); }
+  syncWakeLock();
   if (ui.scrollToNext) {
     ui.scrollToNext = false;
     const next = app.querySelector('.set.next');
@@ -1025,6 +1055,7 @@ document.addEventListener('click', (ev) => {
   if (!el || el.disabled) return;
   const { act, key, arg } = el.dataset;
   wakeAudio();
+  syncWakeLock();
   if (ui.armed && !['skip', 'finish', 'del'].includes(act)) ui.armed = null;
   switch (act) {
     case 't-minus': adjustTimer(-30); return;
