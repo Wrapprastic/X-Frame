@@ -72,7 +72,7 @@
     top: 0;
     z-index: 5;
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
     align-items: center;
     gap: 8px;
     padding: calc(env(safe-area-inset-top) + 8px) 0 8px;
@@ -83,7 +83,7 @@
   .top .right { justify-self: end; }
   .eyebrow { color: var(--muted); font-size: 14px; }
   h2 { font-size: 28px; margin: 8px 0 4px; }
-  .link { color: var(--accent); font-weight: 600; min-height: 44px; padding: 0 4px; }
+  .link { color: var(--accent); font-weight: 600; min-height: 44px; padding: 0 4px; white-space: nowrap; }
   .btn {
     min-height: 48px;
     padding: 0 18px;
@@ -235,6 +235,26 @@
   }
   .eyebrow + .list-row { border-top: 0; }
   .list-row .meta { white-space: nowrap; }
+  .badge.small { min-width: 0; padding: 4px 10px; font-size: 13px; border-radius: 999px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .key-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ink); display: inline-block; }
+  .key-line { width: 18px; height: 2px; background: var(--accent); display: inline-block; }
+  .chart { width: 100%; height: auto; display: block; touch-action: manipulation; }
+  .chart .c-grid { stroke: var(--line); stroke-width: 1; }
+  .chart .c-axis { fill: var(--muted); font-size: 11px; }
+  .chart .c-label { fill: var(--ink); font-size: 12px; font-weight: 700; }
+  .chart .c-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .c-dot { fill: var(--ink); stroke: var(--card); stroke-width: 2; }
+  .chart .c-sel { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .chart .c-hit { fill: transparent; cursor: pointer; }
+  .readout { font-size: 15px; margin-top: 4px; }
+  .vol-row { display: grid; grid-template-columns: 96px 1fr 52px; gap: 10px; align-items: center; min-height: 40px; border-top: 1px solid var(--line); font-size: 15px; }
+  .vol-row .meta { text-align: right; font-variant-numeric: tabular-nums; }
+  .vbar { height: 8px; border-radius: 4px; background: var(--chip); overflow: hidden; }
+  .vbar span { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+  .week-nav { display: grid; grid-template-columns: 52px 1fr 52px; align-items: center; text-align: center; gap: 8px; margin-bottom: 4px; }
+  .week-nav .btn { padding: 0; font-size: 22px; }
   .stepper .val {
     display: grid; place-items: center; font-size: 24px; font-weight: 700;
     border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
@@ -677,9 +697,16 @@ function skipSession(templateId) {
 // Engine.replayBaseline takes. Phase 2's first entry after Phase 1 is marked
 // so its target resets to the bottom of the range.
 function firstSetEntries(slotId, exerciseId) {
-  const list = S.sets
-    .filter((x) => x.kind === 'work' && x.setIndex === 0 && x.slotId === slotId && x.exerciseId === exerciseId)
-    .sort((a, b) => a.loggedAt - b.loggedAt);
+  const bySession = new Map();
+  for (const x of S.sets) {
+    if (x.kind !== 'work' || x.slotId !== slotId || x.exerciseId !== exerciseId) continue;
+    if (x.setIndex !== 0 && !x.makeBaseline) continue;
+    const cur = bySession.get(x.sessionId);
+    // A set the user made the baseline stands in for that session's first set.
+    if (!cur || (x.makeBaseline && !cur.makeBaseline)) bySession.set(x.sessionId, x);
+  }
+  const list = [...bySession.values()].sort((a, b) =>
+    sessionById(a.sessionId).startedAt - sessionById(b.sessionId).startedAt);
   let prevType = null;
   return list.map((x) => {
     const session = sessionById(x.sessionId);
@@ -702,9 +729,11 @@ function firstSetEntries(slotId, exerciseId) {
 // target for every set, the target RIR, how many sets, and whether it stalled.
 // The target comes from sessions before this one only, so logging set 1
 // today never moves the target for sets 2 and on.
-function planFor(slot, session) {
+// exerciseId picks the exercise when planning a past session from history,
+// since today's swaps and permanent swaps may have changed since.
+function planFor(slot, session, exerciseId) {
   const block = blockById(session.blockId);
-  const ex = exerciseFor(slot, session);
+  const ex = exerciseId ? exercise(exerciseId) : exerciseFor(slot, session);
   const extra = (session.extraSets || {})[slot.id] || 0;
   if (slot.oneOff) {
     // A today-only exercise has no baseline: it starts from the last weight
@@ -743,6 +772,34 @@ function plansFor(session) {
   return sessionSlots(session)
     .map((slot) => planFor(slot, session))
     .filter((p) => p.n > 0);
+}
+
+// The plan a logged set was judged against, worked out again from history so
+// edits and deletions earlier on always give the right answer.
+function planForLogged(set) {
+  const session = sessionById(set.sessionId);
+  const slot = session && sessionSlots(session).find((s) => s.id === set.slotId);
+  return slot ? planFor(slot, session, set.exerciseId) : null;
+}
+
+function liveResult(set) {
+  const p = planForLogged(set);
+  return p ? Engine.judgeSet(p.target, set, p.slot.repLow) : set.result;
+}
+
+// "Make this my baseline": one chosen set per session, slot and exercise.
+function toggleBaseline(setId) {
+  const set = S.sets.find((x) => x.id === setId);
+  const on = !set.makeBaseline;
+  for (const x of S.sets) {
+    if (x.sessionId === set.sessionId && x.slotId === set.slotId && x.exerciseId === set.exerciseId && x.makeBaseline) {
+      x.makeBaseline = false;
+      save('sets', x);
+    }
+  }
+  set.makeBaseline = on;
+  save('sets', set);
+  toast(on ? 'Baseline set from this set' : 'Baseline back to normal');
 }
 
 // Extra sets and today-only exercises are logged but never change a baseline.
@@ -805,6 +862,7 @@ const ui = {
   panel: null, // an open panel on a card: { kind: 'notes' | 'edit', slotId }
   swap: null, // the swap screen: { slotId, mode: 'today' | 'permanent', all, creating }
   add: null, // the add-exercise screen: { exerciseId, mode: 'today' | 'keep', sets, low, high, all, creating }
+  hist: null, // history: { origin, stack: [{ page, id }], edit, draft, chartPt, volIdx }
   summary: null,
   scrollToNext: false,
 };
@@ -857,6 +915,7 @@ function render() {
   else if (ui.view === 'settings') app.innerHTML = settingsView();
   else if (ui.view === 'swap' && activeSession() && ui.swap) app.innerHTML = swapView();
   else if (ui.view === 'add' && activeSession() && ui.add) app.innerHTML = addView();
+  else if (ui.view === 'history' && ui.hist) app.innerHTML = historyView();
   else { ui.view = 'home'; app.innerHTML = homeView(); }
   syncWakeLock();
   if (ui.scrollToNext) {
@@ -901,7 +960,8 @@ function homeView() {
   }).join('');
 
   return `<div class="wrap">
-    <div class="top"><div class="eyebrow">X Frame</div><div></div>
+    <div class="top"><div><button class="link" data-act="hist-open">History</button></div>
+      <div class="mid eyebrow">X Frame</div>
       <button class="link right" data-act="settings">Settings</button></div>
     <h2>${esc(weekTitle(block, S.program.week))}</h2>
     ${hero || ''}
@@ -972,6 +1032,7 @@ function exerciseHead(p, session) {
       <button class="btn" data-act="add-set" data-arg="${slotId}">Add set</button>
       <button class="btn" data-act="panel" data-arg="notes" data-key="${slotId}">Notes</button>
       <button class="btn" data-act="panel" data-arg="edit" data-key="${slotId}">Edit</button>
+      <button class="btn" data-act="hist-open-ex" data-arg="${p.ex.id}">History</button>
       ${p.slot.oneOff && !anyLogged ? `<button class="btn" data-act="added-remove" data-arg="${slotId}">Remove</button>` : ''}
     </div>`;
   }
@@ -1082,6 +1143,8 @@ function editor(plan, session, i, d, log) {
       ${removable ? `<button class="btn" data-act="remove-set" data-key="${key}">Remove set</button>` : ''}
       <button class="btn" data-act="cancel" data-key="${key}">Cancel</button>
     </div>
+    ${log && log.kind === 'work' ? `<button class="btn big" data-act="make-base" data-arg="${log.id}">
+      ${log.makeBaseline ? 'Stop using as my baseline' : 'Make this my baseline'}</button>` : ''}
   </div>`;
 }
 
@@ -1212,6 +1275,372 @@ function addView() {
   </div>`;
 }
 
+// ---------- History ----------
+// History is a stack of pages opened from home or from a session; Back pops
+// the stack and, at the bottom, returns to where it was opened from.
+
+const fmtDate = (ms) => {
+  const d = new Date(ms);
+  const opts = { weekday: 'short', day: 'numeric', month: 'short' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString('en-GB', opts);
+};
+
+const sessionTitle = (s) => `${fmtDate(s.startedAt)} · ${weekTitle(blockById(s.blockId), s.week)}`;
+
+function openHistory(origin, page, id) {
+  if (origin === 'session') sessionScroll = window.scrollY;
+  ui.menuFor = null;
+  ui.hist = { origin, stack: [{ page, id }], edit: null, draft: null, chartPt: null, volIdx: 0 };
+  show('history');
+}
+
+function histPush(page, id) {
+  ui.hist.stack.push({ page, id });
+  ui.hist.edit = null;
+  ui.hist.chartPt = null;
+  show('history');
+}
+
+function histBack() {
+  ui.hist.stack.pop();
+  ui.hist.edit = null;
+  ui.hist.chartPt = null;
+  if (ui.hist.stack.length) { show('history'); return; }
+  const origin = ui.hist.origin;
+  ui.hist = null;
+  if (origin === 'session' && activeSession()) closeScreen();
+  else show('home');
+}
+
+function historyView() {
+  const { page, id } = ui.hist.stack[ui.hist.stack.length - 1];
+  const pages = {
+    main: histMain,
+    exercises: histExercises,
+    exercise: histExercise,
+    sessions: histSessions,
+    session: histSession,
+    volume: histVolume,
+  };
+  const [title, body] = pages[page](id);
+  return `<div class="wrap">
+    <div class="top"><div><button class="link" data-act="hist-back">‹ Back</button></div>
+      <div class="mid"><b>${esc(title)}</b></div><div></div></div>
+    ${body}
+  </div>`;
+}
+
+// Slots whose current exercise has missed three sessions in a row.
+function stalledSlots() {
+  const out = [];
+  for (const t of SEED.sessions) {
+    for (const slot of templateSlots(t.id)) {
+      const exId = permanentExerciseId(slot);
+      const ex = exercise(exId);
+      const { results } = Engine.replayBaseline(firstSetEntries(slot.id, exId), slot.repLow, slot.repHigh, ex.incrementKg);
+      if (Engine.isStalled(results.map((r) => r.result))) out.push({ t, slot, ex });
+    }
+  }
+  return out;
+}
+
+function histMain() {
+  const stalls = stalledSlots();
+  const finished = S.sessions.filter((s) => s.status !== 'in-progress').length;
+  const exCount = new Set(S.sets.map((x) => x.exerciseId)).size;
+  return ['History', `
+    <div class="card"><div class="eyebrow">Stalled</div>
+      ${stalls.length
+        ? stalls.map(({ t, slot, ex }) => `<div class="sum-row"><span>${esc(ex.name)}</span><span class="meta">${esc(t.name)} · ${esc(slot.labelP2)}</span></div>`).join('')
+        : '<div class="meta">Nothing has stalled.</div>'}
+    </div>
+    <div class="card">
+      <button class="list-row" data-act="hist-go" data-arg="exercises"><span>Exercises</span><span class="meta">${exCount} ›</span></button>
+      <button class="list-row" data-act="hist-go" data-arg="sessions"><span>Sessions</span><span class="meta">${finished} ›</span></button>
+      <button class="list-row" data-act="hist-go" data-arg="volume"><span>Weekly volume</span><span class="meta">›</span></button>
+    </div>
+    <button class="btn big" data-act="export-csv" ${S.sets.length ? '' : 'disabled'}>Export CSV</button>
+    <p class="meta">One row per set, for a backup or a spreadsheet.</p>`];
+}
+
+function histExercises() {
+  const last = new Map();
+  const sessionsFor = new Map();
+  for (const x of S.sets) {
+    if (!last.has(x.exerciseId) || x.loggedAt > last.get(x.exerciseId)) last.set(x.exerciseId, x.loggedAt);
+    if (!sessionsFor.has(x.exerciseId)) sessionsFor.set(x.exerciseId, new Set());
+    sessionsFor.get(x.exerciseId).add(x.sessionId);
+  }
+  const ids = [...last.keys()].sort((a, b) => last.get(b) - last.get(a));
+  const rows = ids.map((id) => {
+    const n = sessionsFor.get(id).size;
+    return `<button class="list-row" data-act="hist-go" data-arg="exercise" data-key="${id}">
+      <span>${esc(exercise(id).name)}</span><span class="meta">${n} session${n === 1 ? '' : 's'} · ${fmtDate(last.get(id))}</span></button>`;
+  }).join('');
+  return ['Exercises', `<div class="card">${rows || '<div class="meta">Nothing logged yet.</div>'}</div>`];
+}
+
+// One logged set as a tappable row, with its editor open under it.
+function histSetRow(set) {
+  const p = planForLogged(set);
+  const result = p ? Engine.judgeSet(p.target, set, p.slot.repLow) : set.result;
+  const word = { hit: 'Hit', miss: 'Miss', first: 'Logged' }[result] || '';
+  const tags = [set.kind !== 'work' ? set.kind : '', set.makeBaseline ? 'baseline' : ''].filter(Boolean).join(' · ');
+  const open = ui.hist.edit === set.id;
+  return `<button class="list-row" data-act="hist-edit" data-arg="${set.id}">
+      <span>Set ${set.setIndex + 1} · ${fmtKg(set.weight)} kg × ${set.reps} · RIR ${fmtRir(set.rir)}${tags ? ` <span class="meta">· ${tags}</span>` : ''}</span>
+      <span class="badge small ${result}">${word}</span>
+    </button>${open ? histEditor(set) : ''}`;
+}
+
+function histEditor(set) {
+  const d = ui.hist.draft;
+  const ex = exercise(set.exerciseId);
+  const chips = [0, 1, 2, 3, 4, 5].map((r) =>
+    `<button class="${d.rir === r ? 'on' : ''}" data-act="h-rir" data-arg="${r}">${fmtRir(r)}</button>`).join('');
+  const delArmed = ui.armed === 'hdel:' + set.id;
+  return `<div class="editor">
+    <div class="lab">Weight (kg) · steps of ${fmtKg(ex.incrementKg)}</div>
+    <div class="stepper">
+      <button data-act="h-w" data-arg="-1" aria-label="Less weight">−</button>
+      <input data-field="h-weight" inputmode="decimal" value="${fmtKg(d.weight)}" aria-label="Weight in kg">
+      <button data-act="h-w" data-arg="1" aria-label="More weight">+</button>
+    </div>
+    <div class="lab">Reps</div>
+    <div class="stepper">
+      <button data-act="h-r" data-arg="-1" aria-label="Fewer reps">−</button>
+      <input data-field="h-reps" inputmode="numeric" value="${d.reps}" aria-label="Reps">
+      <button data-act="h-r" data-arg="1" aria-label="More reps">+</button>
+    </div>
+    <div class="lab">Reps in reserve</div>
+    <div class="chips">${chips}</div>
+    <div class="actions">
+      <button class="btn primary" data-act="h-save">Save</button>
+      <button class="btn ${delArmed ? 'armed' : ''}" data-act="h-del">${delArmed ? 'Delete set' : 'Delete'}</button>
+      <button class="btn" data-act="h-cancel">Cancel</button>
+    </div>
+    ${set.kind === 'work' ? `<button class="btn big" data-act="h-base">${set.makeBaseline ? 'Stop using as my baseline' : 'Make this my baseline'}</button>` : ''}
+  </div>`;
+}
+
+// Best work set per session, oldest first: the chart's data. Deload, drop and
+// extra sets are left out.
+function chartPoints(exerciseId) {
+  const best = new Map();
+  for (const x of S.sets) {
+    if (x.exerciseId !== exerciseId || x.kind !== 'work') continue;
+    const e = Engine.epley(x.weight, x.reps);
+    const cur = best.get(x.sessionId);
+    if (!cur || e > cur.e1rm) best.set(x.sessionId, { weight: x.weight, reps: x.reps, e1rm: e, at: sessionById(x.sessionId).startedAt });
+  }
+  return [...best.values()].sort((a, b) => a.at - b.at);
+}
+
+// A tick step of 1, 2, 2.5 or 5 times a power of ten, giving about four lines.
+function niceStep(range) {
+  const raw = range / 4;
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  for (const m of [1, 2, 2.5, 5, 10]) if (raw <= m * pow) return m * pow;
+  return 10 * pow;
+}
+
+function exerciseChart(points) {
+  if (points.length < 2) {
+    return '<div class="meta">The chart starts after two sessions of this lift.</div>';
+  }
+  const W = 340, H = 190, L = 34, R = 14, T = 14, B = 26;
+  const lo = Math.min(...points.map((p) => p.weight));
+  const hi = Math.max(...points.map((p) => p.e1rm));
+  const step = niceStep(Math.max(hi - lo, 5));
+  // A quarter step of headroom so points never sit on the chart's edges.
+  const y0 = Math.max(0, Math.floor((lo - step / 4) / step) * step);
+  const y1 = Math.ceil((hi + step / 4) / step) * step;
+  const x = (i) => L + (i * (W - L - R)) / (points.length - 1);
+  const y = (v) => T + ((y1 - v) * (H - T - B)) / (y1 - y0);
+  let grid = '';
+  for (let v = y0; v <= y1 + 1e-9; v += step) {
+    grid += `<line class="c-grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>
+      <text class="c-axis" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmtKg(v)}</text>`;
+  }
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.e1rm).toFixed(1)}`).join('');
+  const sel = ui.hist.chartPt == null ? points.length - 1 : ui.hist.chartPt;
+  const dots = points.map((p, i) => `<circle class="c-dot" cx="${x(i)}" cy="${y(p.weight)}" r="${i === sel ? 6 : 4.5}"/>`).join('');
+  const colW = (W - L - R) / (points.length - 1);
+  const hits = points.map((p, i) =>
+    `<rect class="c-hit" data-act="chart-pt" data-arg="${i}" x="${x(i) - colW / 2}" y="0" width="${colW}" height="${H}"/>`).join('');
+  const last = points[points.length - 1];
+  const sp = points[sel];
+  return `<div class="legend"><span><i class="key-dot"></i>Best set (kg)</span><span><i class="key-line"></i>Estimated 1RM (kg)</span></div>
+    <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Best set and estimated one-rep max per session">
+      ${grid}
+      <line class="c-sel" x1="${x(sel)}" x2="${x(sel)}" y1="${T}" y2="${H - B}"/>
+      <path class="c-line" d="${line}"/>
+      ${dots}
+      <text class="c-label" x="${x(points.length - 1) - 4}" y="${y(last.e1rm) - 8}" text-anchor="end">${fmtKg(Math.round(last.e1rm))}</text>
+      <text class="c-axis" x="${L}" y="${H - 6}">${esc(fmtDate(points[0].at))}</text>
+      <text class="c-axis" x="${W - R}" y="${H - 6}" text-anchor="end">${esc(fmtDate(last.at))}</text>
+      ${hits}
+    </svg>
+    <div class="readout">${esc(fmtDate(sp.at))}: best set ${fmtKg(sp.weight)} kg × ${sp.reps} · estimated 1RM ${fmtKg(Math.round(sp.e1rm * 10) / 10)} kg</div>`;
+}
+
+function histExercise(id) {
+  const ex = exercise(id);
+  const sets = S.sets.filter((x) => x.exerciseId === id);
+  const sessionIds = [...new Set(sets.map((x) => x.sessionId))]
+    .sort((a, b) => sessionById(b).startedAt - sessionById(a).startedAt);
+  const groups = sessionIds.map((sid) => {
+    const s = sessionById(sid);
+    const rows = sets.filter((x) => x.sessionId === sid)
+      .sort((a, b) => a.slotId.localeCompare(b.slotId) || a.setIndex - b.setIndex)
+      .map(histSetRow).join('');
+    return `<div class="card"><div class="eyebrow">${esc(sessionTitle(s))} · ${esc(templateById[s.templateId].name)}</div>${rows}</div>`;
+  }).join('');
+  return [ex.name, `<div class="card">${exerciseChart(chartPoints(id))}</div>${groups}`];
+}
+
+function histSessions() {
+  const list = S.sessions.filter((s) => s.status !== 'in-progress' || s.id === S.program.activeSessionId)
+    .sort((a, b) => b.startedAt - a.startedAt);
+  let html = '';
+  let lastWeek = null;
+  for (const s of list) {
+    const wk = s.blockId + ':' + s.week;
+    if (wk !== lastWeek) {
+      if (lastWeek) html += '</div>';
+      html += `<div class="card"><div class="eyebrow">${esc(weekTitle(blockById(s.blockId), s.week))}</div>`;
+      lastWeek = wk;
+    }
+    const n = S.sets.filter((x) => x.sessionId === s.id).length;
+    const status = s.status === 'skipped' ? 'Skipped' : s.status === 'in-progress' ? 'In progress' : `${n} sets`;
+    html += `<button class="list-row" data-act="hist-go" data-arg="session" data-key="${s.id}">
+      <span>${esc(templateById[s.templateId].name)}<br><span class="meta">${esc(fmtDate(s.startedAt))}</span></span>
+      <span class="meta">${status} ›</span></button>`;
+  }
+  if (lastWeek) html += '</div>';
+  return ['Sessions', html || '<div class="card"><div class="meta">No sessions yet.</div></div>'];
+}
+
+function histSession(id) {
+  const s = sessionById(id);
+  const name = templateById[s.templateId].name;
+  if (s.status === 'skipped') return [name, `<div class="card"><div class="eyebrow">${esc(sessionTitle(s))}</div><div class="meta">Skipped. No sets were logged.</div></div>`];
+  const sets = S.sets.filter((x) => x.sessionId === id);
+  const cards = sessionSlots(s).map((slot) => {
+    const mine = sets.filter((x) => x.slotId === slot.id);
+    const exIds = [...new Set(mine.map((x) => x.exerciseId))];
+    const label = slotLabel(slot, blockById(s.blockId).type) || '';
+    return exIds.map((exId) => `<div class="card">
+      <div class="ex-name"><span class="tag">${esc(label)}</span>${esc(exercise(exId).name)}</div>
+      ${mine.filter((x) => x.exerciseId === exId).sort((a, b) => a.setIndex - b.setIndex).map(histSetRow).join('')}
+    </div>`).join('');
+  }).join('');
+  return [name, `<div class="eyebrow">${esc(sessionTitle(s))}</div>${cards || '<div class="card"><div class="meta">No sets logged.</div></div>'}`];
+}
+
+// Weeks with any session in them, newest first, with the current week always
+// included.
+function volumeWeeks() {
+  const seen = new Map();
+  const add = (blockId, week) => { if (!seen.has(blockId + ':' + week)) seen.set(blockId + ':' + week, { blockId, week }); };
+  add(S.program.blockId, S.program.week);
+  for (const s of S.sessions) add(s.blockId, s.week);
+  return [...seen.values()].sort((a, b) =>
+    blockById(b.blockId).startedAt - blockById(a.blockId).startedAt || b.week - a.week);
+}
+
+function histVolume() {
+  const weeks = volumeWeeks();
+  const idx = Math.min(ui.hist.volIdx, weeks.length - 1);
+  const { blockId, week } = weeks[idx];
+  const block = blockById(blockId);
+  const planned = Engine.weeklyVolume(SEED.sessions.map((t) => ({ slots: templateSlots(t.id) })), block.type, week);
+  const done = {};
+  for (const s of S.sessions) {
+    if (s.blockId !== blockId || s.week !== week) continue;
+    const slots = sessionSlots(s);
+    for (const x of S.sets) {
+      if (x.sessionId !== s.id || x.kind === 'drop') continue;
+      const slot = slots.find((sl) => sl.id === x.slotId);
+      if (slot) done[slot.primaryMuscle] = (done[slot.primaryMuscle] || 0) + 1;
+    }
+  }
+  const muscles = [...new Set([...Object.keys(planned), ...Object.keys(done)])]
+    .filter((m) => planned[m] || done[m])
+    .sort((a, b) => (planned[b] || 0) - (planned[a] || 0));
+  const rows = muscles.map((m) => {
+    const d = done[m] || 0, p = planned[m] || 0;
+    const pct = p ? Math.min(100, (d / p) * 100) : 100;
+    return `<div class="vol-row"><span>${esc(m)}</span>
+      <span class="vbar"><span style="width:${pct}%"></span></span>
+      <span class="meta">${d} / ${p}</span></div>`;
+  }).join('');
+  return ['Weekly volume', `
+    <div class="card">
+      <div class="week-nav">
+        <button class="btn" data-act="vol-week" data-arg="1" ${idx >= weeks.length - 1 ? 'disabled' : ''} aria-label="Earlier week">‹</button>
+        <b>${esc(weekTitle(block, week))}</b>
+        <button class="btn" data-act="vol-week" data-arg="-1" ${idx === 0 ? 'disabled' : ''} aria-label="Later week">›</button>
+      </div>
+      <div class="meta">Hard sets logged against the plan, per muscle.</div>
+      ${rows}
+    </div>`];
+}
+
+// ---------- CSV export ----------
+
+function csvCell(v) {
+  const s = v == null ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function buildCsv() {
+  const head = ['Date', 'Time', 'Phase', 'Week', 'Session', 'Slot', 'Exercise', 'Set', 'Kind',
+    'Target kg', 'Target reps', 'Target RIR', 'kg', 'Reps', 'RIR', 'Result', 'Chosen as baseline'];
+  const plans = new Map(); // one plan per session, slot and exercise
+  const rows = [...S.sets].sort((a, b) => a.loggedAt - b.loggedAt).map((x) => {
+    const s = sessionById(x.sessionId);
+    const block = blockById(s.blockId);
+    const pk = `${x.sessionId}|${x.slotId}|${x.exerciseId}`;
+    if (!plans.has(pk)) plans.set(pk, planForLogged(x));
+    const p = plans.get(pk);
+    const d = new Date(x.loggedAt);
+    const pad = (n) => String(n).padStart(2, '0');
+    return [
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+      `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+      BLOCK_NAMES[block.type], s.week, templateById[s.templateId].name,
+      p ? p.label : '', exercise(x.exerciseId).name, x.setIndex + 1, x.kind,
+      p ? p.target.weight : x.targetWeight, p ? p.target.reps : x.targetReps,
+      fmtRange(p ? p.rir : x.targetRir),
+      x.weight, x.reps, x.rir,
+      p ? Engine.judgeSet(p.target, x, p.slot.repLow) : x.result,
+      x.makeBaseline ? 'yes' : '',
+    ];
+  });
+  return [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
+// The share sheet on iPhone (Save to Files, Mail, AirDrop); a download elsewhere.
+function exportCsv() {
+  const d = new Date();
+  const name = `x-frame-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}.csv`;
+  const file = new File([buildCsv()], name, { type: 'text/csv' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: 'X Frame history' }).catch(() => {});
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function settingsView() {
   const block = currentBlock();
   const active = activeSession();
@@ -1259,6 +1688,7 @@ function openScreen(view) {
 function closeScreen() {
   ui.swap = null;
   ui.add = null;
+  ui.hist = null;
   show('session', { keepScroll: true });
   window.scrollTo(0, sessionScroll);
 }
@@ -1467,7 +1897,7 @@ document.addEventListener('click', (ev) => {
   const { act, key, arg } = el.dataset;
   wakeAudio();
   syncWakeLock();
-  if (ui.armed && !['skip', 'finish', 'del'].includes(act)) ui.armed = null;
+  if (ui.armed && !['skip', 'finish', 'del', 'h-del'].includes(act)) ui.armed = null;
   switch (act) {
     case 't-minus': adjustTimer(-30); return;
     case 't-plus': adjustTimer(30); return;
@@ -1513,6 +1943,57 @@ document.addEventListener('click', (ev) => {
     case 'new-ex-cancel': (ui.swap || ui.add).creating = false; render(); break;
     case 'create-ex': createFromForm(); break;
     case 'screen-close': closeScreen(); break;
+    case 'make-base': toggleBaseline(arg); ui.openKey = null; render(); break;
+    case 'hist-open': openHistory('home', 'main'); break;
+    case 'hist-open-ex': openHistory('session', 'exercise', arg); break;
+    case 'hist-go': histPush(arg, key); break;
+    case 'hist-back': histBack(); break;
+    case 'hist-edit': {
+      if (ui.hist.edit === arg) { ui.hist.edit = null; render(); break; }
+      const set = S.sets.find((x) => x.id === arg);
+      ui.hist.edit = arg;
+      ui.hist.draft = { weight: set.weight, reps: set.reps, rir: set.rir };
+      render();
+      break;
+    }
+    case 'h-w': {
+      const set = S.sets.find((x) => x.id === ui.hist.edit);
+      const inc = exercise(set.exerciseId).incrementKg;
+      const d = ui.hist.draft;
+      d.weight = Math.max(0, Engine.roundDownToIncrement((d.weight || 0) + Number(arg) * inc, inc));
+      render();
+      break;
+    }
+    case 'h-r': ui.hist.draft.reps = Math.max(0, ui.hist.draft.reps + Number(arg)); render(); break;
+    case 'h-rir': ui.hist.draft.rir = Number(arg); render(); break;
+    case 'h-cancel': ui.hist.edit = null; render(); break;
+    case 'h-save': {
+      const set = S.sets.find((x) => x.id === ui.hist.edit);
+      const d = ui.hist.draft;
+      if (!(d.weight > 0)) { toast('Enter the weight you lifted'); break; }
+      Object.assign(set, { weight: d.weight, reps: d.reps, rir: d.rir });
+      set.result = liveResult(set);
+      save('sets', set);
+      ui.hist.edit = null;
+      toast('Set saved');
+      render();
+      break;
+    }
+    case 'h-del': {
+      const id = ui.hist.edit;
+      if (!arm('hdel:' + id)) break;
+      const set = S.sets.find((x) => x.id === id);
+      S.sets.splice(S.sets.indexOf(set), 1);
+      remove('sets', id);
+      ui.hist.edit = null;
+      toast('Set deleted');
+      render();
+      break;
+    }
+    case 'h-base': toggleBaseline(ui.hist.edit); ui.hist.edit = null; render(); break;
+    case 'chart-pt': ui.hist.chartPt = Number(arg); render(); break;
+    case 'vol-week': ui.hist.volIdx = Math.max(0, ui.hist.volIdx + Number(arg)); render(); break;
+    case 'export-csv': exportCsv(); break;
     case 'start': startSession(arg); break;
     case 'resume': show('session', { scrollToNext: true }); break;
     case 'skip': if (arm('skip:' + arg)) skipSession(arg); break;
@@ -1543,6 +2024,12 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('input', (ev) => {
   const el = ev.target;
   if (el.dataset.field === 'notes') { setExerciseFields(el.dataset.arg, { notes: el.value }); return; }
+  if (el.dataset.field === 'h-weight' || el.dataset.field === 'h-reps') {
+    const v = parseFloat(el.value.replace(',', '.'));
+    if (el.dataset.field === 'h-weight') ui.hist.draft.weight = Number.isFinite(v) ? v : null;
+    else ui.hist.draft.reps = Number.isFinite(v) ? Math.round(v) : 0;
+    return;
+  }
   if (el.dataset.field !== 'weight' && el.dataset.field !== 'reps') return;
   const { session, plan, i } = planForKey(el.dataset.key);
   const d = { ...draftFor(plan, session, i) };

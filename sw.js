@@ -11,7 +11,7 @@
 // The new worker takes over at once (skipWaiting + claim). A page already open
 // keeps the code it loaded; the next launch gets the new version.
 
-const CACHE_VERSION = 'x-frame-v4';
+const CACHE_VERSION = 'x-frame-v5';
 
 const APP_FILES = [
   './',
