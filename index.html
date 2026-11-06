@@ -206,6 +206,31 @@
     font: inherit; color: inherit; width: 100%; min-height: 52px; padding: 0 12px;
     border-radius: 12px; border: 1px solid var(--line); background: var(--bg);
   }
+  .inline-link { color: var(--accent); font-weight: 600; padding: 4px 0; font-size: 15px; }
+  .rest-edit { display: grid; grid-template-columns: 64px 1fr 64px auto; gap: 8px; align-items: center; margin: 8px 0 4px; }
+  .rest-edit button { min-height: 48px; border-radius: 12px; background: var(--chip); font-weight: 600; }
+  .rest-edit .val { text-align: center; font-size: 20px; font-weight: 700; }
+  .rest-edit .btn { padding: 0 16px; }
+  body.timing .wrap { padding-bottom: calc(env(safe-area-inset-bottom) + 150px); }
+  #timer {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 8;
+    background: var(--card); border-top: 1px solid var(--line);
+    padding: 0 16px calc(env(safe-area-inset-bottom) + 12px);
+  }
+  #timer[hidden] { display: none; }
+  #timer .t-track { height: 4px; margin: 0 -16px; background: var(--chip); }
+  #timer .t-fill { height: 100%; width: 0; background: var(--accent); }
+  #timer .t-row {
+    max-width: 560px; margin: 0 auto; padding-top: 10px;
+    display: grid; grid-template-columns: 72px 1fr 72px 72px; gap: 8px; align-items: center;
+  }
+  #timer .t-row button { min-height: 56px; border-radius: 12px; background: var(--chip); font-weight: 700; }
+  #timer .t-time { text-align: center; font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  #timer .t-time small { display: block; font-size: 13px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #timer.over { background: var(--accent); color: var(--accent-ink); animation: flash .5s ease-in-out 6 alternate; }
+  #timer.over .t-time small { color: var(--accent-ink); }
+  #timer.over .t-row button, #timer.over .t-track { visibility: hidden; }
+  @keyframes flash { from { opacity: 1; } to { opacity: .55; } }
   #toast {
     position: fixed; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 16px);
     max-width: 528px; margin: 0 auto; padding: 14px 16px; border-radius: 12px;
@@ -217,6 +242,15 @@
 </head>
 <body>
 <div id="app"></div>
+<div id="timer" hidden>
+  <div class="t-track"><div class="t-fill"></div></div>
+  <div class="t-row">
+    <button data-act="t-minus" aria-label="30 seconds less">−30s</button>
+    <div class="t-time" aria-live="off"><span class="t-clock">0:00</span><small class="t-label"></small></div>
+    <button data-act="t-plus" aria-label="30 seconds more">+30s</button>
+    <button data-act="t-skip">Skip</button>
+  </div>
+</div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="seed.js"></script>
 <script src="engine.js"></script>
@@ -238,7 +272,9 @@ const templateById = Object.fromEntries(SEED.sessions.map((t) => [t.id, t]));
 // Everything is loaded into S at launch and written through to IndexedDB the
 // moment it changes, so a killed app loses nothing that was logged.
 
-const S = { program: null, blocks: [], sessions: [], sets: [] };
+// exerciseSettings holds the user's per-exercise changes, such as rest time,
+// stored in the meta store under "exercise:<id>".
+const S = { program: null, blocks: [], sessions: [], sets: [], exerciseSettings: {} };
 let db;
 
 function openDb() {
@@ -278,6 +314,9 @@ async function load() {
   S.sessions = sessions;
   S.sets = sets;
   S.program = meta.find((m) => m.key === 'program') || null;
+  for (const m of meta) {
+    if (m.key.startsWith('exercise:')) S.exerciseSettings[m.key.slice('exercise:'.length)] = m;
+  }
   if (!S.program) {
     const b = newBlock('phase1');
     S.program = { key: 'program', blockId: b.id, week: 1, activeSessionId: null, complete: false };
@@ -321,6 +360,114 @@ const weekTitle = (block, week) =>
 
 // Swaps arrive in a later build; until then every slot runs its default.
 const exerciseFor = (slot) => exerciseById[slot.defaultExercise];
+
+const restFor = (ex) => {
+  const s = S.exerciseSettings[ex.id];
+  return s && s.restSeconds != null ? s.restSeconds : ex.restSeconds;
+};
+
+function setRest(exerciseId, seconds) {
+  const key = 'exercise:' + exerciseId;
+  const rec = { ...(S.exerciseSettings[exerciseId] || { key }), restSeconds: seconds };
+  S.exerciseSettings[exerciseId] = rec;
+  save('meta', rec);
+}
+
+const fmtTime = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+
+// ---------- Rest timer ----------
+// The timer keeps an absolute end time in the program state, so it survives
+// the app being closed. It can only alert while the app is open on screen:
+// iOS gives web apps no background or lock-screen alerts.
+
+let audioCtx = null;
+
+// iOS only lets a page make sound after a tap, so every tap wakes the audio.
+function wakeAudio() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  if (!audioCtx) audioCtx = new Ctx();
+  if (audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+}
+
+// Three short beeps.
+function beep() {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime + 0.02;
+  for (let i = 0; i < 3; i++) {
+    const t = t0 + i * 0.3;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.6, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.25);
+  }
+}
+
+function startTimer(seconds, label) {
+  S.program.timer = { endsAt: Date.now() + seconds * 1000, total: seconds, label };
+  save('meta', S.program);
+  tickTimer();
+}
+
+function adjustTimer(deltaSeconds) {
+  const t = S.program.timer;
+  if (!t) return;
+  t.endsAt += deltaSeconds * 1000;
+  t.total = Math.max(1, t.total + deltaSeconds);
+  if (t.endsAt <= Date.now()) { stopTimer(); return; }
+  save('meta', S.program);
+  tickTimer();
+}
+
+function stopTimer() {
+  S.program.timer = null;
+  save('meta', S.program);
+  tickTimer();
+}
+
+let overUntil = 0; // the end-of-rest flash shows until this time
+
+function tickTimer() {
+  const el = document.getElementById('timer');
+  const t = S.program && S.program.timer;
+  const now = Date.now();
+  if (t && now >= t.endsAt) {
+    // A rest that ran out while the app was closed or hidden ends quietly.
+    if (document.visibilityState === 'visible' && now - t.endsAt < 3000) {
+      beep();
+      overUntil = now + 3000;
+    }
+    S.program.timer = null;
+    save('meta', S.program);
+  }
+  const live = S.program && S.program.timer;
+  if (live) {
+    const left = Math.max(0, Math.ceil((live.endsAt - now) / 1000));
+    el.classList.remove('over');
+    el.querySelector('.t-clock').textContent = fmtTime(left);
+    el.querySelector('.t-label').textContent = 'Rest · ' + live.label;
+    el.querySelector('.t-fill').style.width = `${Math.min(100, (1 - left / live.total) * 100)}%`;
+    el.hidden = false;
+  } else if (now < overUntil) {
+    el.classList.add('over');
+    el.querySelector('.t-clock').textContent = 'Go';
+    el.querySelector('.t-label').textContent = 'Rest over · next set';
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+    el.classList.remove('over');
+  }
+  document.body.classList.toggle('timing', !el.hidden);
+}
+
+setInterval(tickTimer, 250);
+document.addEventListener('visibilitychange', tickTimer);
 
 // ---------- Program state ----------
 
@@ -484,6 +631,7 @@ const ui = {
   openKey: null, // the set row whose editor is open, as "slotId:setIndex"
   drafts: {}, // unsaved edits per set row
   armed: null, // a button waiting for its confirming second tap
+  restEdit: null, // the exercise whose rest time is being changed
   summary: null,
   scrollToNext: false,
 };
@@ -639,6 +787,13 @@ function groupCard(group, session, nextKey) {
     return `<div class="ex-head">
       <div class="ex-name"><span class="tag">${esc(p.label)}</span>${esc(p.ex.name)}</div>
       <div class="meta">${p.slot.repLow}–${p.slot.repHigh} reps · RIR ${fmtRange(p.rir)} · Last: ${esc(lastText)}</div>
+      <button class="inline-link" data-act="rest-edit" data-arg="${p.ex.id}">Rest ${fmtTime(restFor(p.ex))}</button>
+      ${ui.restEdit === p.ex.id ? `<div class="rest-edit">
+        <button data-act="rest-minus" data-arg="${p.ex.id}" aria-label="15 seconds less">−15s</button>
+        <div class="val">${fmtTime(restFor(p.ex))}</div>
+        <button data-act="rest-plus" data-arg="${p.ex.id}" aria-label="15 seconds more">+15s</button>
+        <button class="btn" data-act="rest-edit" data-arg="${p.ex.id}">Done</button>
+      </div>` : ''}
       ${p.stalled ? '<div class="pill miss stall">Stalled: 3 misses in a row</div>' : ''}
     </div>`;
   }).join('');
@@ -794,6 +949,8 @@ function logSet(key) {
   if (existing) S.sets[S.sets.indexOf(existing)] = rec;
   else S.sets.push(rec);
   save('sets', rec);
+  // A newly logged set starts the rest; saving an edit to an old one doesn't.
+  if (!existing) startTimer(restFor(plan.ex), plan.ex.name);
   if (d.applyRest) {
     session.weightOverrides = { ...session.weightOverrides, [plan.slot.id]: d.weight };
     // Unlogged drafts for this slot pick up the new weight.
@@ -867,8 +1024,15 @@ document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-act]');
   if (!el || el.disabled) return;
   const { act, key, arg } = el.dataset;
+  wakeAudio();
   if (ui.armed && !['skip', 'finish', 'del'].includes(act)) ui.armed = null;
   switch (act) {
+    case 't-minus': adjustTimer(-30); return;
+    case 't-plus': adjustTimer(30); return;
+    case 't-skip': stopTimer(); return;
+    case 'rest-edit': ui.restEdit = ui.restEdit === arg ? null : arg; render(); break;
+    case 'rest-minus': setRest(arg, Math.max(15, restFor(exerciseById[arg]) - 15)); render(); break;
+    case 'rest-plus': setRest(arg, Math.min(600, restFor(exerciseById[arg]) + 15)); render(); break;
     case 'start': startSession(arg); break;
     case 'resume': show('session', { scrollToNext: true }); break;
     case 'skip': if (arm('skip:' + arg)) skipSession(arg); break;
