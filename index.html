@@ -235,6 +235,10 @@
   }
   .eyebrow + .list-row { border-top: 0; }
   .list-row .meta { white-space: nowrap; }
+  .choice { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+  .choice > div { flex: 1; min-width: 0; }
+  .choice .seg { margin: 8px 0 0; }
+  .badge.drop { background: var(--chip); color: var(--muted); }
   .badge.small { min-width: 0; padding: 4px 10px; font-size: 13px; border-radius: 999px; }
   .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -765,8 +769,21 @@ function planFor(slot, session, exerciseId) {
     kind: deload ? 'deload' : 'work',
     label: slotLabel(slot, block.type),
     stalled: Engine.isStalled(results.map((r) => r.result)),
+    drop: !deload && !!slot.dropSetEligible && Engine.dropSetsOn(block.type, session.week),
   };
 }
+
+// The drop set's row index, kept clear of work and extra sets.
+const DROP = 99;
+
+// A drop set appears once the last planned work set is logged, at half that
+// set's weight. It stays visible once logged, even if that set is deleted.
+function dropShown(plan, session) {
+  if (!plan.drop) return false;
+  return !!(setLogFor(session, plan, plan.n - 1) || setLogFor(session, plan, DROP));
+}
+
+const setName = (i) => (i === DROP ? 'Drop set' : `Set ${i + 1}`);
 
 function plansFor(session) {
   return sessionSlots(session)
@@ -783,6 +800,7 @@ function planForLogged(set) {
 }
 
 function liveResult(set) {
+  if (set.kind === 'drop') return 'drop';
   const p = planForLogged(set);
   return p ? Engine.judgeSet(p.target, set, p.slot.repLow) : set.result;
 }
@@ -862,6 +880,7 @@ const ui = {
   panel: null, // an open panel on a card: { kind: 'notes' | 'edit', slotId }
   swap: null, // the swap screen: { slotId, mode: 'today' | 'permanent', all, creating }
   add: null, // the add-exercise screen: { exerciseId, mode: 'today' | 'keep', sets, low, high, all, creating }
+  maintWeeks: 8, // the length picked for a maintenance block
   hist: null, // history: { origin, stack: [{ page, id }], edit, draft, chartPt, volIdx }
   summary: null,
   scrollToNext: false,
@@ -888,6 +907,17 @@ function draftFor(plan, session, i) {
   if (ui.drafts[key]) return ui.drafts[key];
   const log = setLogFor(session, plan, i);
   if (log) return { weight: log.weight, reps: log.reps, rir: log.rir, applyRest: false };
+  if (i === DROP) {
+    // Half the last work set's actual weight, rounded down, but never nothing.
+    const last = setLogFor(session, plan, plan.n - 1);
+    const inc = plan.ex.incrementKg;
+    return {
+      weight: last ? Math.max(inc, Engine.dropSetWeight(last.weight, inc)) : null,
+      reps: plan.slot.repLow,
+      rir: 0,
+      applyRest: false,
+    };
+  }
   let weight = (session.weightOverrides || {})[plan.slot.id];
   if (weight == null) weight = plan.target.weight;
   // First time on a slot there is no target weight, so later sets take the
@@ -931,8 +961,7 @@ function homeView() {
   const next = nextTemplate();
   let hero;
   if (S.program.complete) {
-    hero = `<div class="card"><h3>Program complete</h3>
-      <p class="meta">Phase 2 is finished. Choosing what runs next comes in a later build. Settings can move you to any phase and week.</p></div>`;
+    hero = nextBlockChooser();
   } else if (active) {
     hero = `<div class="card"><div class="eyebrow">In progress</div>
       <h3>${esc(templateById[active.templateId].name)}</h3>
@@ -969,6 +998,40 @@ function homeView() {
   </div>`;
 }
 
+// After a block other than Phase 1 ends, the user picks what runs next.
+// Baselines, permanent swaps and history carry into whichever they pick.
+function nextBlockChooser() {
+  const weeks = ui.maintWeeks || 8;
+  const option = (type, title, text, extra = '') => `<div class="choice">
+      <div><b>${title}</b><div class="meta">${text}</div>${extra}</div>
+      <button class="btn primary" data-act="next-block" data-arg="${type}">Start</button>
+    </div>`;
+  return `<div class="card">
+    <div class="eyebrow">${esc(BLOCK_NAMES[currentBlock().type])} is finished</div>
+    <h3>What's next?</h3>
+    <p class="meta">Your baselines, swaps and history carry into whichever you pick.</p>
+    ${option('phase2', 'Repeat Phase 2', 'Another 8 weeks of Phase 2, for continued growth.')}
+    ${option('maintenance', 'Maintenance block', 'Phase 2 with 20% fewer sets, after a growth run.',
+      seg('maint-weeks', String(weeks), [['6', '6 weeks'], ['8', '8 weeks']]))}
+    ${option('phase1-no-intensifiers', 'Phase 1, no intensifiers', 'Phase 1 without the week 6–7 drop sets, for fat-loss phases.')}
+    ${option('phase1', 'Restart the full program', 'Phase 1 from week 1, then Phase 2.')}
+  </div>`;
+}
+
+function startBlock(type) {
+  const b = newBlock(type);
+  if (type === 'maintenance') {
+    b.lengthWeeks = ui.maintWeeks || 8;
+    save('blocks', b);
+  }
+  S.program.blockId = b.id;
+  S.program.week = 1;
+  S.program.complete = false;
+  save('meta', S.program);
+  toast(`${BLOCK_NAMES[type]} started`);
+  show('home');
+}
+
 function sessionView() {
   const session = activeSession();
   const block = blockById(session.blockId);
@@ -979,7 +1042,7 @@ function sessionView() {
   let nextKey = null;
   const groups = groupPlans(plans);
   for (const g of groups) {
-    for (const i of rowOrder(g)) {
+    for (const i of rowOrder(g, session)) {
       const [p, idx] = i;
       if (!nextKey && !setLogFor(session, p, idx)) nextKey = `${p.slot.id}:${idx}`;
     }
@@ -993,7 +1056,12 @@ function sessionView() {
     notes.push('Deload week: half the sets at your baseline weight. These sets never change a baseline.');
   }
 
-  const unlogged = plans.some((p) => [...Array(p.rows).keys()].some((i) => !setLogFor(session, p, i)));
+  if (plans.some((p) => p.drop)) {
+    notes.push('Drop sets this week: after the last set of an exercise marked "drop set", go straight into a set at half the weight, for as many reps as you can.');
+  }
+
+  const unlogged = plans.some((p) => [...Array(p.rows).keys()].some((i) => !setLogFor(session, p, i)) ||
+    (dropShown(p, session) && !setLogFor(session, p, DROP)));
   const finishArmed = ui.armed === 'finish';
 
   return `<div class="wrap">
@@ -1010,10 +1078,12 @@ function sessionView() {
 }
 
 // Rows of a group as [plan, setIndex], alternating set by set within a pair.
-function rowOrder(group) {
+// A shown drop set comes last.
+function rowOrder(group, session) {
   const rows = [];
   const most = Math.max(...group.map((p) => p.rows));
   for (let i = 0; i < most; i++) for (const p of group) if (i < p.rows) rows.push([p, i]);
+  for (const p of group) if (dropShown(p, session)) rows.push([p, DROP]);
   return rows;
 }
 
@@ -1061,7 +1131,7 @@ function exerciseHead(p, session) {
       <div class="ex-name"><span class="tag">${esc(p.label)}</span>${esc(p.ex.name)}</div>
       <button class="more" data-act="menu" data-arg="${slotId}" aria-label="Options for ${esc(p.ex.name)}">•••</button>
     </div>
-    <div class="meta">${p.slot.repLow}–${p.slot.repHigh} reps · RIR ${fmtRange(p.rir)} · Last: ${esc(lastText)}${swapped}${p.slot.oneOff ? ' · today only' : ''}</div>
+    <div class="meta">${p.slot.repLow}–${p.slot.repHigh} reps · RIR ${fmtRange(p.rir)} · Last: ${esc(lastText)}${swapped}${p.slot.oneOff ? ' · today only' : ''}${p.drop ? ' · <b>drop set</b>' : ''}</div>
     ${p.ex.notes && panel !== 'notes' ? `<div class="ex-note">${esc(p.ex.notes)}</div>` : ''}
     <button class="inline-link" data-act="rest-edit" data-arg="${p.ex.id}">Rest ${fmtTime(restFor(p.ex))}</button>
     ${ui.restEdit === p.ex.id ? `<div class="rest-edit">
@@ -1079,7 +1149,7 @@ function exerciseHead(p, session) {
 function groupCard(group, session, nextKey) {
   const heads = group.map((p) => exerciseHead(p, session)).join('');
   const paired = group.length > 1;
-  const rows = rowOrder(group).map(([p, i]) => setRow(p, session, i, paired, nextKey)).join('');
+  const rows = rowOrder(group, session).map(([p, i]) => setRow(p, session, i, paired, nextKey)).join('');
   return `<div class="card">${heads}${rows}</div>`;
 }
 
@@ -1088,10 +1158,18 @@ function setRow(plan, session, i, paired, nextKey) {
   const log = setLogFor(session, plan, i);
   const open = ui.openKey === key;
   const d = draftFor(plan, session, i);
-  const extra = i >= plan.n ? '<br>extra' : '';
-  const label = `${paired ? `<span class="tag">${esc(plan.label)}</span><br>` : ''}Set ${i + 1}${extra}`;
+  const extra = i >= plan.n && i !== DROP ? '<br>extra' : '';
+  const label = `${paired ? `<span class="tag">${esc(plan.label)}</span><br>` : ''}${setName(i)}${extra}`;
   let vals, right;
-  if (log && !open) {
+  if (i === DROP) {
+    // A drop set has no target to hit and never changes a baseline.
+    vals = log && !open
+      ? `${fmtKg(log.weight)} kg × ${log.reps}`
+      : `${fmtKg(d.weight)} kg × as many as you can`;
+    right = log
+      ? (open ? '<div></div>' : '<div class="badge drop">Drop</div>')
+      : `<button class="btn primary done" data-act="open" data-key="${key}">Enter</button>`;
+  } else if (log && !open) {
     const result = Engine.judgeSet(plan.target, log, plan.slot.repLow);
     const easy = Engine.easierThanPlanned(result, log.rir, plan.rir);
     vals = `${fmtKg(log.weight)} kg × ${log.reps} · RIR ${fmtRir(log.rir)}${easy ? '<small>Easier than planned</small>' : ''}`;
@@ -1114,9 +1192,10 @@ function setRow(plan, session, i, paired, nextKey) {
 
 function editor(plan, session, i, d, log) {
   const key = `${plan.slot.id}:${i}`;
-  const laterUnlogged = [...Array(plan.rows).keys()].some((j) => j > i && !setLogFor(session, plan, j));
+  const isDrop = i === DROP;
+  const laterUnlogged = !isDrop && [...Array(plan.rows).keys()].some((j) => j > i && !setLogFor(session, plan, j));
   // The last added set can be taken away again until it is logged.
-  const removable = !log && i >= plan.n && i === plan.rows - 1;
+  const removable = !log && !isDrop && i >= plan.n && i === plan.rows - 1;
   const chips = [0, 1, 2, 3, 4, 5].map((r) =>
     `<button class="${d.rir === r ? 'on' : ''}" data-act="rir" data-key="${key}" data-arg="${r}">${fmtRir(r)}</button>`).join('');
   const delArmed = ui.armed === 'del:' + key;
@@ -1127,14 +1206,15 @@ function editor(plan, session, i, d, log) {
       <input data-field="weight" data-key="${key}" inputmode="decimal" value="${d.weight == null ? '' : fmtKg(d.weight)}" placeholder="kg" aria-label="Weight in kg">
       <button data-act="w+" data-key="${key}" aria-label="More weight">+</button>
     </div>
-    <div class="lab">Reps · target ${plan.target.reps}</div>
+    <div class="lab">Reps · ${isDrop ? 'as many as you can' : `target ${plan.target.reps}`}</div>
     <div class="stepper">
       <button data-act="r-" data-key="${key}" aria-label="Fewer reps">−</button>
       <input data-field="reps" data-key="${key}" inputmode="numeric" value="${d.reps}" aria-label="Reps">
       <button data-act="r+" data-key="${key}" aria-label="More reps">+</button>
     </div>
+    ${isDrop ? '<div class="meta">Logged at RIR 0. No rest timer after a drop set.</div>' : `
     <div class="lab">Reps in reserve · target ${fmtRange(plan.rir)}</div>
-    <div class="chips">${chips}</div>
+    <div class="chips">${chips}</div>`}
     ${laterUnlogged ? `<button class="toggle ${d.applyRest ? 'on' : ''}" data-act="apply" data-key="${key}">
       <span class="box">${d.applyRest ? '✓' : ''}</span>Use this weight for the remaining sets</button>` : ''}
     <div class="actions">
@@ -1383,13 +1463,12 @@ function histExercises() {
 
 // One logged set as a tappable row, with its editor open under it.
 function histSetRow(set) {
-  const p = planForLogged(set);
-  const result = p ? Engine.judgeSet(p.target, set, p.slot.repLow) : set.result;
-  const word = { hit: 'Hit', miss: 'Miss', first: 'Logged' }[result] || '';
-  const tags = [set.kind !== 'work' ? set.kind : '', set.makeBaseline ? 'baseline' : ''].filter(Boolean).join(' · ');
+  const result = liveResult(set);
+  const word = { hit: 'Hit', miss: 'Miss', first: 'Logged', drop: 'Drop' }[result] || '';
+  const tags = [set.kind !== 'work' && set.kind !== 'drop' ? set.kind : '', set.makeBaseline ? 'baseline' : ''].filter(Boolean).join(' · ');
   const open = ui.hist.edit === set.id;
   return `<button class="list-row" data-act="hist-edit" data-arg="${set.id}">
-      <span>Set ${set.setIndex + 1} · ${fmtKg(set.weight)} kg × ${set.reps} · RIR ${fmtRir(set.rir)}${tags ? ` <span class="meta">· ${tags}</span>` : ''}</span>
+      <span>${setName(set.setIndex)} · ${fmtKg(set.weight)} kg × ${set.reps} · RIR ${fmtRir(set.rir)}${tags ? ` <span class="meta">· ${tags}</span>` : ''}</span>
       <span class="badge small ${result}">${word}</span>
     </button>${open ? histEditor(set) : ''}`;
 }
@@ -1611,11 +1690,11 @@ function buildCsv() {
       `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
       `${pad(d.getHours())}:${pad(d.getMinutes())}`,
       BLOCK_NAMES[block.type], s.week, templateById[s.templateId].name,
-      p ? p.label : '', exercise(x.exerciseId).name, x.setIndex + 1, x.kind,
+      p ? p.label : '', exercise(x.exerciseId).name, x.kind === 'drop' ? 'drop' : x.setIndex + 1, x.kind,
       p ? p.target.weight : x.targetWeight, p ? p.target.reps : x.targetReps,
       fmtRange(p ? p.rir : x.targetRir),
       x.weight, x.reps, x.rir,
-      p ? Engine.judgeSet(p.target, x, p.slot.repLow) : x.result,
+      x.kind === 'drop' ? 'drop' : p ? Engine.judgeSet(p.target, x, p.slot.repLow) : x.result,
       x.makeBaseline ? 'yes' : '',
     ];
   });
@@ -1644,7 +1723,7 @@ function exportCsv() {
 function settingsView() {
   const block = currentBlock();
   const active = activeSession();
-  const types = ['phase1', 'phase2'];
+  const types = ['phase1', 'phase2', 'maintenance', 'phase1-no-intensifiers'];
   const typeOpts = types.map((t) => `<option value="${t}" ${block.type === t ? 'selected' : ''}>${BLOCK_NAMES[t]}</option>`).join('');
   const weekOpts = [1, 2, 3, 4, 5, 6, 7, 8].map((w) => `<option value="${w}" ${S.program.week === w ? 'selected' : ''}>Week ${w}</option>`).join('');
   return `<div class="wrap">
@@ -1796,7 +1875,9 @@ function logSet(key) {
     toast('Enter the weight you lifted');
     return;
   }
-  const result = Engine.judgeSet(plan.target, d, plan.slot.repLow);
+  const isDrop = i === DROP;
+  if (isDrop) d.rir = 0;
+  const result = isDrop ? 'drop' : Engine.judgeSet(plan.target, d, plan.slot.repLow);
   const existing = setLogFor(session, plan, i);
   const rec = existing
     ? { ...existing, weight: d.weight, reps: d.reps, rir: d.rir, result }
@@ -1806,7 +1887,7 @@ function logSet(key) {
         slotId: plan.slot.id,
         exerciseId: plan.ex.id,
         setIndex: i,
-        kind: kindOfRow(plan, i),
+        kind: isDrop ? 'drop' : kindOfRow(plan, i),
         targetWeight: plan.target.weight,
         targetReps: plan.target.reps,
         targetRir: plan.rir,
@@ -1821,7 +1902,10 @@ function logSet(key) {
   else S.sets.push(rec);
   save('sets', rec);
   // A newly logged set starts the rest; saving an edit to an old one doesn't.
-  if (!existing) startTimer(restFor(plan.ex), plan.ex.name);
+  // The drop set follows the last work set straight away, and has no rest
+  // after it either.
+  const dropNext = plan.drop && i === plan.n - 1;
+  if (!existing && !isDrop && !dropNext) startTimer(restFor(plan.ex), plan.ex.name);
   if (d.applyRest) {
     session.weightOverrides = { ...session.weightOverrides, [plan.slot.id]: d.weight };
     // Unlogged drafts for this slot pick up the new weight.
@@ -1855,7 +1939,7 @@ function finishSession() {
     hits: 0, misses: 0, firsts: 0, baselines: [], stalls: [],
   };
   for (const p of plans) {
-    for (const x of logs.filter((l) => l.slotId === p.slot.id && l.exerciseId === p.ex.id)) {
+    for (const x of logs.filter((l) => l.slotId === p.slot.id && l.exerciseId === p.ex.id && l.kind !== 'drop')) {
       const r = Engine.judgeSet(p.target, x, p.slot.repLow);
       summary[{ hit: 'hits', miss: 'misses', first: 'firsts' }[r]] += 1;
     }
@@ -1994,6 +2078,8 @@ document.addEventListener('click', (ev) => {
     case 'chart-pt': ui.hist.chartPt = Number(arg); render(); break;
     case 'vol-week': ui.hist.volIdx = Math.max(0, ui.hist.volIdx + Number(arg)); render(); break;
     case 'export-csv': exportCsv(); break;
+    case 'maint-weeks': ui.maintWeeks = Number(arg); render(); break;
+    case 'next-block': startBlock(arg); break;
     case 'start': startSession(arg); break;
     case 'resume': show('session', { scrollToNext: true }); break;
     case 'skip': if (arm('skip:' + arg)) skipSession(arg); break;
