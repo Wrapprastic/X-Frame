@@ -207,6 +207,38 @@
     border-radius: 12px; border: 1px solid var(--line); background: var(--bg);
   }
   .inline-link { color: var(--accent); font-weight: 600; padding: 4px 0; font-size: 15px; }
+  .ex-title { display: flex; align-items: flex-start; gap: 8px; }
+  .ex-title .ex-name { flex: 1; min-width: 0; }
+  .more {
+    min-width: 52px; min-height: 40px; border-radius: 10px; background: var(--chip);
+    color: var(--muted); font-weight: 800; letter-spacing: 1px; flex: none;
+  }
+  .menu-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+  .panel { margin: 8px 0; }
+  textarea, input.text {
+    width: 100%; font: inherit; color: inherit; padding: 12px;
+    border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
+  }
+  textarea { resize: vertical; }
+  .ex-note {
+    font-size: 15px; margin-top: 6px; padding: 6px 10px; border-radius: 10px;
+    background: var(--chip); white-space: pre-wrap;
+  }
+  .stall-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .stall-row .btn { min-height: 40px; padding: 0 14px; }
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 4px; margin: 12px 0 6px; border-radius: 14px; background: var(--chip); }
+  .seg button { min-height: 44px; border-radius: 10px; font-weight: 600; }
+  .seg button.on { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
+  .list-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    width: 100%; min-height: 56px; border-top: 1px solid var(--line); text-align: left;
+  }
+  .eyebrow + .list-row { border-top: 0; }
+  .list-row .meta { white-space: nowrap; }
+  .stepper .val {
+    display: grid; place-items: center; font-size: 24px; font-weight: 700;
+    border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
+  }
   .rest-edit { display: grid; grid-template-columns: 64px 1fr 64px auto; gap: 8px; align-items: center; margin: 8px 0 4px; }
   .rest-edit button { min-height: 48px; border-radius: 12px; background: var(--chip); font-weight: 600; }
   .rest-edit .val { text-align: center; font-size: 20px; font-weight: 700; }
@@ -222,7 +254,7 @@
   #timer .t-fill { height: 100%; width: 0; background: var(--accent); }
   #timer .t-row {
     max-width: 560px; margin: 0 auto; padding-top: 10px;
-    display: grid; grid-template-columns: 72px 1fr 72px 72px; gap: 8px; align-items: center;
+    display: grid; grid-template-columns: 72px minmax(0, 1fr) 72px 72px; gap: 8px; align-items: center;
   }
   #timer .t-row button { min-height: 56px; border-radius: 12px; background: var(--chip); font-weight: 700; }
   #timer .t-time { text-align: center; font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
@@ -267,14 +299,32 @@ const BLOCK_NAMES = {
 };
 const exerciseById = Object.fromEntries(SEED.exercises.map((e) => [e.id, e]));
 const templateById = Object.fromEntries(SEED.sessions.map((t) => [t.id, t]));
+const roleById = Object.fromEntries(SEED.roles.map((r) => [r.id, r]));
+// The muscle a role trains, for exercises the user adds to a session.
+const muscleByRole = {};
+for (const t of SEED.sessions) for (const sl of t.slots) muscleByRole[sl.role] = muscleByRole[sl.role] || sl.primaryMuscle;
+const EQUIPMENT = {
+  barbell: ['Barbell', 2.5],
+  smith: ['Smith machine', 2.5],
+  plate: ['Plate-loaded', 2.5],
+  dumbbell: ['Dumbbell', 2.5],
+  cable: ['Cable', 2.5],
+  machine: ['Pin-loaded machine', 5],
+  bodyweight: ['Bodyweight', 2.5],
+};
+const INCREMENTS = [0.5, 1, 1.25, 2, 2.5, 4, 5, 10];
 
 // ---------- Storage ----------
 // Everything is loaded into S at launch and written through to IndexedDB the
 // moment it changes, so a killed app loses nothing that was logged.
 
-// exerciseSettings holds the user's per-exercise changes, such as rest time,
-// stored in the meta store under "exercise:<id>".
-const S = { program: null, blocks: [], sessions: [], sets: [], exerciseSettings: {} };
+// S.meta holds every other record of the meta store by key:
+//   exercise:<id>  the user's changes to an exercise (name, increment, rest,
+//                  notes), or the whole record for an exercise they created
+//   role:<id>      exercises the user added to a role's list
+//   swap:<slotId>  a permanent swap
+//   slot:<id>      an exercise kept in a session, with its own slot
+const S = { program: null, blocks: [], sessions: [], sets: [], meta: {} };
 let db;
 
 function openDb() {
@@ -314,9 +364,7 @@ async function load() {
   S.sessions = sessions;
   S.sets = sets;
   S.program = meta.find((m) => m.key === 'program') || null;
-  for (const m of meta) {
-    if (m.key.startsWith('exercise:')) S.exerciseSettings[m.key.slice('exercise:'.length)] = m;
-  }
+  for (const m of meta) if (m.key !== 'program') S.meta[m.key] = m;
   if (!S.program) {
     const b = newBlock('phase1');
     S.program = { key: 'program', blockId: b.id, week: 1, activeSessionId: null, complete: false };
@@ -358,20 +406,80 @@ const slotLabel = (slot, type) => (usesPhase2Labels(type) ? slot.labelP2 : slot.
 const weekTitle = (block, week) =>
   `${BLOCK_NAMES[block.type]} · Week ${week}${Engine.isDeloadWeek(week) ? ' · Deload' : ''}`;
 
-// Swaps arrive in a later build; until then every slot runs its default.
-const exerciseFor = (slot) => exerciseById[slot.defaultExercise];
-
-const restFor = (ex) => {
-  const s = S.exerciseSettings[ex.id];
-  return s && s.restSeconds != null ? s.restSeconds : ex.restSeconds;
-};
-
-function setRest(exerciseId, seconds) {
-  const key = 'exercise:' + exerciseId;
-  const rec = { ...(S.exerciseSettings[exerciseId] || { key }), restSeconds: seconds };
-  S.exerciseSettings[exerciseId] = rec;
+function putMeta(rec) {
+  S.meta[rec.key] = rec;
   save('meta', rec);
 }
+
+function dropMeta(key) {
+  delete S.meta[key];
+  remove('meta', key);
+}
+
+// An exercise with the user's changes applied. Custom exercises live only in
+// the meta store.
+function exercise(id) {
+  const seed = exerciseById[id];
+  const m = S.meta['exercise:' + id];
+  if (!seed) return m ? { ...m } : null;
+  return m ? { ...seed, ...m, id } : seed;
+}
+
+function setExerciseFields(id, fields) {
+  const key = 'exercise:' + id;
+  putMeta({ ...(S.meta[key] || { key }), ...fields });
+}
+
+const restFor = (ex) => ex.restSeconds;
+const setRest = (id, seconds) => setExerciseFields(id, { restSeconds: seconds });
+
+function roleExerciseIds(roleId) {
+  const extra = (S.meta['role:' + roleId] || {}).exerciseIds || [];
+  return [...new Set([...roleById[roleId].exerciseIds, ...extra])];
+}
+
+function addToRole(roleId, exerciseId) {
+  if (roleExerciseIds(roleId).includes(exerciseId)) return;
+  const key = 'role:' + roleId;
+  const rec = S.meta[key] || { key, exerciseIds: [] };
+  putMeta({ ...rec, exerciseIds: [...rec.exerciseIds, exerciseId] });
+}
+
+function createExercise(name, roleId, equipment, incrementKg) {
+  const role = roleById[roleId];
+  const id = 'custom-' + uid();
+  putMeta({
+    key: 'exercise:' + id,
+    id,
+    name,
+    role: roleId,
+    type: role.type,
+    equipment,
+    incrementKg,
+    restSeconds: role.type === 'C' ? 150 : 90,
+    isCustom: true,
+  });
+  addToRole(roleId, id);
+  return id;
+}
+
+// The template's slots plus any exercises the user kept in that session.
+function templateSlots(templateId) {
+  const kept = Object.values(S.meta)
+    .filter((m) => m.key.startsWith('slot:') && m.templateId === templateId)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  return [...templateById[templateId].slots, ...kept];
+}
+
+// Every slot on a session's screen, including today-only additions.
+const sessionSlots = (session) => [...templateSlots(session.templateId), ...(session.added || [])];
+
+const permanentExerciseId = (slot) =>
+  (S.meta['swap:' + slot.id] || {}).exerciseId || slot.defaultExercise;
+
+// Today's swap wins over a permanent one, which wins over the default.
+const exerciseFor = (slot, session) =>
+  exercise((session.swaps || {})[slot.id] || permanentExerciseId(slot));
 
 const fmtTime = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 
@@ -596,7 +704,19 @@ function firstSetEntries(slotId, exerciseId) {
 // today never moves the target for sets 2 and on.
 function planFor(slot, session) {
   const block = blockById(session.blockId);
-  const ex = exerciseFor(slot);
+  const ex = exerciseFor(slot, session);
+  const extra = (session.extraSets || {})[slot.id] || 0;
+  if (slot.oneOff) {
+    // A today-only exercise has no baseline: it starts from the last weight
+    // used on that lift anywhere, at the bottom of the range.
+    return {
+      slot, ex, kind: 'extra', label: '+', stalled: false,
+      target: { weight: latestWeight(ex.id, session), reps: slot.repLow },
+      rir: Engine.targetRir(SEED.rir, block.type, session.week, ex.type),
+      n: slot.sets.phase1,
+      rows: slot.sets.phase1 + extra,
+    };
+  }
   const prior = firstSetEntries(slot.id, ex.id).filter((e) => e.startedAt < session.startedAt);
   const { baseline, results } = Engine.replayBaseline(prior, slot.repLow, slot.repHigh, ex.incrementKg);
   const deload = Engine.isDeloadWeek(session.week);
@@ -605,12 +725,14 @@ function planFor(slot, session) {
   if (deload) target = Engine.deloadTarget(baseline, slot.repLow);
   else if (block.type === 'phase2' && lastType && lastType !== 'phase2') target = Engine.phaseStartTarget(baseline, slot.repLow);
   else target = Engine.nextTarget(baseline, slot.repLow, slot.repHigh, ex.incrementKg);
+  const n = Engine.setsFor(slot, block.type, session.week);
   return {
     slot,
     ex,
     target,
     rir: Engine.targetRir(SEED.rir, block.type, session.week, ex.type),
-    n: Engine.setsFor(slot, block.type, session.week),
+    n,
+    rows: n + extra, // planned sets plus any the user added today
     kind: deload ? 'deload' : 'work',
     label: slotLabel(slot, block.type),
     stalled: Engine.isStalled(results.map((r) => r.result)),
@@ -618,38 +740,56 @@ function planFor(slot, session) {
 }
 
 function plansFor(session) {
-  return templateById[session.templateId].slots
+  return sessionSlots(session)
     .map((slot) => planFor(slot, session))
     .filter((p) => p.n > 0);
 }
 
+// Extra sets and today-only exercises are logged but never change a baseline.
+const kindOfRow = (plan, i) => (i >= plan.n ? 'extra' : plan.kind);
+
+// The most recent weight logged on an exercise before this session.
+function latestWeight(exerciseId, session) {
+  let best = null;
+  for (const x of S.sets) {
+    if (x.exerciseId !== exerciseId || x.sessionId === session.id) continue;
+    if (!best || x.loggedAt > best.loggedAt) best = x;
+  }
+  return best ? best.weight : null;
+}
+
 // Slots sharing a letter (D1, D2) alternate set by set, so they share a card.
+// Today-only exercises always get a card of their own.
 function groupPlans(plans) {
   const groups = [];
   for (const p of plans) {
     const last = groups[groups.length - 1];
-    if (last && last[0].label[0] === p.label[0]) last.push(p);
+    if (last && !p.slot.oneOff && !last[0].slot.oneOff && last[0].label[0] === p.label[0]) last.push(p);
     else groups.push([p]);
   }
   return groups;
 }
 
-const setLogFor = (sessionId, slotId, i) =>
-  S.sets.find((x) => x.sessionId === sessionId && x.slotId === slotId && x.setIndex === i);
+// A set row belongs to the slot and the exercise in it, so after a swap the
+// rows start fresh and the old exercise's sets stay in its own history.
+const setLogFor = (session, plan, i) =>
+  S.sets.find((x) => x.sessionId === session.id && x.slotId === plan.slot.id &&
+    x.exerciseId === plan.ex.id && x.setIndex === i);
 
 // The most recent earlier session's sets for this slot and exercise, hits and
-// misses alike.
+// misses alike. A today-only exercise matches the lift wherever it was done.
 function lastTime(plan, session) {
+  const matches = (x) => x.exerciseId === plan.ex.id && (plan.slot.oneOff || x.slotId === plan.slot.id);
   let best = null;
   for (const x of S.sets) {
-    if (x.slotId !== plan.slot.id || x.exerciseId !== plan.ex.id || x.sessionId === session.id) continue;
+    if (!matches(x) || x.sessionId === session.id) continue;
     const s = sessionById(x.sessionId);
     if (s.startedAt >= session.startedAt) continue;
     if (!best || s.startedAt > best.startedAt) best = s;
   }
   if (!best) return null;
   return S.sets
-    .filter((x) => x.sessionId === best.id && x.slotId === plan.slot.id)
+    .filter((x) => x.sessionId === best.id && matches(x))
     .sort((a, b) => a.setIndex - b.setIndex);
 }
 
@@ -661,6 +801,10 @@ const ui = {
   drafts: {}, // unsaved edits per set row
   armed: null, // a button waiting for its confirming second tap
   restEdit: null, // the exercise whose rest time is being changed
+  menuFor: null, // the slot whose card menu is open
+  panel: null, // an open panel on a card: { kind: 'notes' | 'edit', slotId }
+  swap: null, // the swap screen: { slotId, mode: 'today' | 'permanent', all, creating }
+  add: null, // the add-exercise screen: { exerciseId, mode: 'today' | 'keep', sets, low, high, all, creating }
   summary: null,
   scrollToNext: false,
 };
@@ -684,15 +828,15 @@ function arm(id) {
 function draftFor(plan, session, i) {
   const key = `${plan.slot.id}:${i}`;
   if (ui.drafts[key]) return ui.drafts[key];
-  const log = setLogFor(session.id, plan.slot.id, i);
+  const log = setLogFor(session, plan, i);
   if (log) return { weight: log.weight, reps: log.reps, rir: log.rir, applyRest: false };
-  let weight = session.weightOverrides[plan.slot.id];
+  let weight = (session.weightOverrides || {})[plan.slot.id];
   if (weight == null) weight = plan.target.weight;
   // First time on a slot there is no target weight, so later sets take the
   // weight just logged on an earlier set.
   if (weight == null) {
     for (let j = i - 1; j >= 0 && weight == null; j--) {
-      const earlier = setLogFor(session.id, plan.slot.id, j);
+      const earlier = setLogFor(session, plan, j);
       if (earlier) weight = earlier.weight;
     }
   }
@@ -711,6 +855,8 @@ function render() {
   if (ui.view === 'session' && activeSession()) app.innerHTML = sessionView();
   else if (ui.view === 'summary' && ui.summary) app.innerHTML = summaryView();
   else if (ui.view === 'settings') app.innerHTML = settingsView();
+  else if (ui.view === 'swap' && activeSession() && ui.swap) app.innerHTML = swapView();
+  else if (ui.view === 'add' && activeSession() && ui.add) app.innerHTML = addView();
   else { ui.view = 'home'; app.innerHTML = homeView(); }
   syncWakeLock();
   if (ui.scrollToNext) {
@@ -775,7 +921,7 @@ function sessionView() {
   for (const g of groups) {
     for (const i of rowOrder(g)) {
       const [p, idx] = i;
-      if (!nextKey && !setLogFor(session.id, p.slot.id, idx)) nextKey = `${p.slot.id}:${idx}`;
+      if (!nextKey && !setLogFor(session, p, idx)) nextKey = `${p.slot.id}:${idx}`;
     }
   }
 
@@ -787,7 +933,7 @@ function sessionView() {
     notes.push('Deload week: half the sets at your baseline weight. These sets never change a baseline.');
   }
 
-  const unlogged = plans.some((p) => [...Array(p.n).keys()].some((i) => !setLogFor(session.id, p.slot.id, i)));
+  const unlogged = plans.some((p) => [...Array(p.rows).keys()].some((i) => !setLogFor(session, p, i)));
   const finishArmed = ui.armed === 'finish';
 
   return `<div class="wrap">
@@ -799,34 +945,78 @@ function sessionView() {
     </div>
     ${notes.map((n) => `<div class="note">${esc(n)}</div>`).join('')}
     ${groups.map((g) => groupCard(g, session, nextKey)).join('')}
+    <button class="btn big" data-act="add-open">+ Add exercise</button>
   </div>`;
 }
 
 // Rows of a group as [plan, setIndex], alternating set by set within a pair.
 function rowOrder(group) {
   const rows = [];
-  const most = Math.max(...group.map((p) => p.n));
-  for (let i = 0; i < most; i++) for (const p of group) if (i < p.n) rows.push([p, i]);
+  const most = Math.max(...group.map((p) => p.rows));
+  for (let i = 0; i < most; i++) for (const p of group) if (i < p.rows) rows.push([p, i]);
   return rows;
 }
 
-function groupCard(group, session, nextKey) {
-  const heads = group.map((p) => {
-    const last = lastTime(p, session);
-    const lastText = last ? last.map((x) => `${fmtKg(x.weight)}×${x.reps}`).join(', ') : 'first time';
-    return `<div class="ex-head">
-      <div class="ex-name"><span class="tag">${esc(p.label)}</span>${esc(p.ex.name)}</div>
-      <div class="meta">${p.slot.repLow}–${p.slot.repHigh} reps · RIR ${fmtRange(p.rir)} · Last: ${esc(lastText)}</div>
-      <button class="inline-link" data-act="rest-edit" data-arg="${p.ex.id}">Rest ${fmtTime(restFor(p.ex))}</button>
-      ${ui.restEdit === p.ex.id ? `<div class="rest-edit">
-        <button data-act="rest-minus" data-arg="${p.ex.id}" aria-label="15 seconds less">−15s</button>
-        <div class="val">${fmtTime(restFor(p.ex))}</div>
-        <button data-act="rest-plus" data-arg="${p.ex.id}" aria-label="15 seconds more">+15s</button>
-        <button class="btn" data-act="rest-edit" data-arg="${p.ex.id}">Done</button>
-      </div>` : ''}
-      ${p.stalled ? '<div class="pill miss stall">Stalled: 3 misses in a row</div>' : ''}
+function exerciseHead(p, session) {
+  const last = lastTime(p, session);
+  const lastText = last ? last.map((x) => `${fmtKg(x.weight)}×${x.reps}`).join(', ') : 'first time';
+  const slotId = p.slot.id;
+  const menuOpen = ui.menuFor === slotId;
+  const panel = ui.panel && ui.panel.slotId === slotId ? ui.panel.kind : null;
+  const anyLogged = S.sets.some((x) => x.sessionId === session.id && x.slotId === slotId);
+  const swapped = (session.swaps || {})[slotId] ? ' · swapped today' : '';
+  let menu = '';
+  if (menuOpen) {
+    menu = `<div class="menu-row">
+      ${p.slot.oneOff ? '' : `<button class="btn" data-act="swap-open" data-arg="${slotId}">Swap</button>`}
+      <button class="btn" data-act="add-set" data-arg="${slotId}">Add set</button>
+      <button class="btn" data-act="panel" data-arg="notes" data-key="${slotId}">Notes</button>
+      <button class="btn" data-act="panel" data-arg="edit" data-key="${slotId}">Edit</button>
+      ${p.slot.oneOff && !anyLogged ? `<button class="btn" data-act="added-remove" data-arg="${slotId}">Remove</button>` : ''}
     </div>`;
-  }).join('');
+  }
+  let panelHtml = '';
+  if (panel === 'notes') {
+    panelHtml = `<div class="panel">
+      <div class="lab">Notes for ${esc(p.ex.name)} (seat height, grip, machine number)</div>
+      <textarea data-field="notes" data-arg="${p.ex.id}" rows="3">${esc(p.ex.notes || '')}</textarea>
+      <div class="actions"><button class="btn primary" data-act="panel-close">Done</button></div>
+    </div>`;
+  } else if (panel === 'edit') {
+    const incOpts = INCREMENTS.map((v) => `<option value="${v}" ${v === p.ex.incrementKg ? 'selected' : ''}>${fmtKg(v)} kg</option>`).join('');
+    panelHtml = `<div class="panel">
+      <div class="lab">Name</div>
+      <input class="text" id="edit-name" value="${esc(p.ex.name)}" autocomplete="off">
+      <div class="lab">Weight steps</div>
+      <select id="edit-inc">${incOpts}</select>
+      <div class="actions">
+        <button class="btn primary" data-act="edit-save" data-arg="${p.ex.id}">Save</button>
+        <button class="btn" data-act="panel-close">Cancel</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="ex-head">
+    <div class="ex-title">
+      <div class="ex-name"><span class="tag">${esc(p.label)}</span>${esc(p.ex.name)}</div>
+      <button class="more" data-act="menu" data-arg="${slotId}" aria-label="Options for ${esc(p.ex.name)}">•••</button>
+    </div>
+    <div class="meta">${p.slot.repLow}–${p.slot.repHigh} reps · RIR ${fmtRange(p.rir)} · Last: ${esc(lastText)}${swapped}${p.slot.oneOff ? ' · today only' : ''}</div>
+    ${p.ex.notes && panel !== 'notes' ? `<div class="ex-note">${esc(p.ex.notes)}</div>` : ''}
+    <button class="inline-link" data-act="rest-edit" data-arg="${p.ex.id}">Rest ${fmtTime(restFor(p.ex))}</button>
+    ${ui.restEdit === p.ex.id ? `<div class="rest-edit">
+      <button data-act="rest-minus" data-arg="${p.ex.id}" aria-label="15 seconds less">−15s</button>
+      <div class="val">${fmtTime(restFor(p.ex))}</div>
+      <button data-act="rest-plus" data-arg="${p.ex.id}" aria-label="15 seconds more">+15s</button>
+      <button class="btn" data-act="rest-edit" data-arg="${p.ex.id}">Done</button>
+    </div>` : ''}
+    ${p.stalled ? `<div class="stall-row"><span class="pill miss">Stalled: 3 misses in a row</span>
+      <button class="btn" data-act="swap-open" data-arg="${slotId}">Swap</button></div>` : ''}
+    ${menu}${panelHtml}
+  </div>`;
+}
+
+function groupCard(group, session, nextKey) {
+  const heads = group.map((p) => exerciseHead(p, session)).join('');
   const paired = group.length > 1;
   const rows = rowOrder(group).map(([p, i]) => setRow(p, session, i, paired, nextKey)).join('');
   return `<div class="card">${heads}${rows}</div>`;
@@ -834,10 +1024,11 @@ function groupCard(group, session, nextKey) {
 
 function setRow(plan, session, i, paired, nextKey) {
   const key = `${plan.slot.id}:${i}`;
-  const log = setLogFor(session.id, plan.slot.id, i);
+  const log = setLogFor(session, plan, i);
   const open = ui.openKey === key;
   const d = draftFor(plan, session, i);
-  const label = `${paired ? `<span class="tag">${esc(plan.label)}</span><br>` : ''}Set ${i + 1}`;
+  const extra = i >= plan.n ? '<br>extra' : '';
+  const label = `${paired ? `<span class="tag">${esc(plan.label)}</span><br>` : ''}Set ${i + 1}${extra}`;
   let vals, right;
   if (log && !open) {
     const result = Engine.judgeSet(plan.target, log, plan.slot.repLow);
@@ -862,7 +1053,9 @@ function setRow(plan, session, i, paired, nextKey) {
 
 function editor(plan, session, i, d, log) {
   const key = `${plan.slot.id}:${i}`;
-  const laterUnlogged = [...Array(plan.n).keys()].some((j) => j > i && !setLogFor(session.id, plan.slot.id, j));
+  const laterUnlogged = [...Array(plan.rows).keys()].some((j) => j > i && !setLogFor(session, plan, j));
+  // The last added set can be taken away again until it is logged.
+  const removable = !log && i >= plan.n && i === plan.rows - 1;
   const chips = [0, 1, 2, 3, 4, 5].map((r) =>
     `<button class="${d.rir === r ? 'on' : ''}" data-act="rir" data-key="${key}" data-arg="${r}">${fmtRir(r)}</button>`).join('');
   const delArmed = ui.armed === 'del:' + key;
@@ -886,6 +1079,7 @@ function editor(plan, session, i, d, log) {
     <div class="actions">
       <button class="btn primary" data-act="done" data-key="${key}">${log ? 'Save' : 'Log set'}</button>
       ${log ? `<button class="btn ${delArmed ? 'armed' : ''}" data-act="del" data-key="${key}">${delArmed ? 'Delete set' : 'Delete'}</button>` : ''}
+      ${removable ? `<button class="btn" data-act="remove-set" data-key="${key}">Remove set</button>` : ''}
       <button class="btn" data-act="cancel" data-key="${key}">Cancel</button>
     </div>
   </div>`;
@@ -906,6 +1100,115 @@ function summaryView() {
     ${s.baselines.length ? `<div class="card"><div class="eyebrow">New baselines</div>${list(s.baselines)}</div>` : ''}
     ${s.stalls.length ? `<div class="card"><div class="eyebrow">Stalled</div>${list(s.stalls)}</div>` : ''}
     <button class="btn primary big" data-act="summary-done">Done</button>
+  </div>`;
+}
+
+function exerciseRows(ids, act) {
+  return ids.map((id) => {
+    const ex = exercise(id);
+    const eq = EQUIPMENT[ex.equipment] ? EQUIPMENT[ex.equipment][0] : ex.equipment;
+    return `<button class="list-row" data-act="${act}" data-arg="${id}">
+      <span>${esc(ex.name)}</span><span class="meta">${esc(eq)}</span></button>`;
+  }).join('');
+}
+
+// Every role's exercises except those listed, one card per role.
+function otherRoleCards(skipIds, act) {
+  return SEED.roles.map((r) => {
+    const ids = roleExerciseIds(r.id).filter((id) => !skipIds.includes(id));
+    return ids.length ? `<div class="card"><div class="eyebrow">${esc(r.name)}</div>${exerciseRows(ids, act)}</div>` : '';
+  }).join('');
+}
+
+// The new-exercise form. The role is fixed when swapping; when adding to a
+// session the user picks it.
+function newExerciseForm(fixedRoleId) {
+  const roleOpts = SEED.roles.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  const eqOpts = Object.entries(EQUIPMENT).map(([k, [name]]) => `<option value="${k}">${esc(name)}</option>`).join('');
+  const incOpts = INCREMENTS.map((v) => `<option value="${v}" ${v === 2.5 ? 'selected' : ''}>${fmtKg(v)} kg</option>`).join('');
+  return `<div class="card">
+    <div class="eyebrow">New exercise</div>
+    <div class="lab">Name</div><input class="text" id="new-name" autocomplete="off" placeholder="e.g. Hoist lateral raise">
+    ${fixedRoleId ? '' : `<div class="lab">Role (sets compound or isolation)</div><select id="new-role">${roleOpts}</select>`}
+    <div class="lab">Equipment</div><select id="new-eq">${eqOpts}</select>
+    <div class="lab">Weight steps</div><select id="new-inc">${incOpts}</select>
+    <div class="actions">
+      <button class="btn primary" data-act="create-ex">Create</button>
+      <button class="btn" data-act="new-ex-cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+
+const seg = (act, value, options) => `<div class="seg">${options.map(([v, label]) =>
+  `<button class="${v === value ? 'on' : ''}" data-act="${act}" data-arg="${v}">${esc(label)}</button>`).join('')}</div>`;
+
+function swapView() {
+  const session = activeSession();
+  const sw = ui.swap;
+  const slot = sessionSlots(session).find((s) => s.id === sw.slotId);
+  const plan = planFor(slot, session);
+  const role = roleById[slot.role];
+  const current = plan.ex;
+  const permanent = exercise(permanentExerciseId(slot));
+  const todayId = (session.swaps || {})[slot.id];
+  const logged = S.sets.some((x) => x.sessionId === session.id && x.slotId === slot.id && x.exerciseId === current.id);
+  const roleIds = roleExerciseIds(slot.role).filter((id) => id !== current.id);
+  const undo = [];
+  if (sw.mode === 'today' && todayId) {
+    undo.push(`<button class="btn big" data-act="swap-pick" data-arg="${permanent.id}">Back to ${esc(permanent.name)}</button>`);
+  }
+  if (sw.mode === 'permanent' && permanent.id !== slot.defaultExercise) {
+    const def = exercise(slot.defaultExercise);
+    undo.push(`<button class="btn big" data-act="swap-pick" data-arg="${def.id}">Back to the default, ${esc(def.name)}</button>`);
+  }
+  return `<div class="wrap">
+    <div class="top"><div><button class="link" data-act="screen-close">‹ Back</button></div>
+      <div class="mid"><b>Swap exercise</b><span class="eyebrow">${esc(plan.label)} · ${esc(role.name)}</span></div><div></div></div>
+    <div class="card">
+      <div class="eyebrow">Now</div><h3>${esc(current.name)}</h3>
+      ${seg('swap-mode', sw.mode, [['today', 'Today only'], ['permanent', 'Permanent']])}
+      <div class="meta">${sw.mode === 'today'
+        ? `Just this session. Next time it's ${esc(permanent.name)} again.`
+        : 'From now on, in this slot, in every phase.'}</div>
+      ${logged ? `<div class="note">The sets you've logged on ${esc(current.name)} today stay in its history.</div>` : ''}
+      ${undo.join('')}
+    </div>
+    <div class="card"><div class="eyebrow">${esc(role.name)} alternatives</div>${exerciseRows(roleIds, 'swap-pick')}</div>
+    ${sw.all ? otherRoleCards([...roleIds, current.id], 'swap-pick')
+      : '<button class="btn big" data-act="list-all">Show every exercise</button>'}
+    ${sw.creating ? newExerciseForm(slot.role) : '<button class="btn big" data-act="new-ex">+ New exercise</button>'}
+  </div>`;
+}
+
+function addView() {
+  const a = ui.add;
+  const top = `<div class="top"><div><button class="link" data-act="${a.exerciseId ? 'add-back' : 'screen-close'}">‹ Back</button></div>
+    <div class="mid"><b>Add exercise</b></div><div></div></div>`;
+  if (!a.exerciseId) {
+    return `<div class="wrap">${top}
+      ${a.creating ? newExerciseForm(null) : '<button class="btn big" data-act="new-ex">+ New exercise</button>'}
+      ${otherRoleCards([], 'add-pick')}
+    </div>`;
+  }
+  const ex = exercise(a.exerciseId);
+  const stepper = (label, act, value) => `<div class="lab">${label}</div>
+    <div class="stepper">
+      <button data-act="${act}" data-arg="-1" aria-label="Less">−</button>
+      <div class="val">${value}</div>
+      <button data-act="${act}" data-arg="1" aria-label="More">+</button>
+    </div>`;
+  return `<div class="wrap">${top}
+    <div class="card">
+      <div class="eyebrow">${esc(roleById[ex.role].name)}</div><h3>${esc(ex.name)}</h3>
+      ${seg('add-mode', a.mode, [['today', 'Today only'], ['keep', 'Keep in this session']])}
+      <div class="meta">${a.mode === 'today'
+        ? 'Logged for today only. It never changes a baseline.'
+        : 'It gets its own slot in this session from now on, with its own baseline.'}</div>
+      ${stepper('Sets', 'add-sets', a.sets)}
+      ${stepper('Reps, bottom of the range', 'add-low', a.low)}
+      ${stepper('Reps, top of the range', 'add-high', a.high)}
+      <button class="btn primary big" data-act="add-confirm">Add to session</button>
+    </div>
   </div>`;
 }
 
@@ -933,8 +1236,116 @@ function settingsView() {
 function planForKey(key) {
   const session = activeSession();
   const [slotId, idx] = key.split(':');
-  const slot = templateById[session.templateId].slots.find((s) => s.id === slotId);
+  const slot = sessionSlots(session).find((s) => s.id === slotId);
   return { session, plan: planFor(slot, session), i: Number(idx) };
+}
+
+function forgetDrafts(slotId) {
+  for (const k of Object.keys(ui.drafts)) if (k.startsWith(slotId + ':')) delete ui.drafts[k];
+  if (ui.openKey && ui.openKey.startsWith(slotId + ':')) ui.openKey = null;
+}
+
+// Swap and Add exercise are full screens over the session. Leaving them puts
+// the session back where it was scrolled.
+let sessionScroll = 0;
+
+function openScreen(view) {
+  sessionScroll = window.scrollY;
+  ui.menuFor = null;
+  ui.panel = null;
+  show(view);
+}
+
+function closeScreen() {
+  ui.swap = null;
+  ui.add = null;
+  show('session', { keepScroll: true });
+  window.scrollTo(0, sessionScroll);
+}
+
+function pickSwap(exerciseId) {
+  const session = activeSession();
+  const slot = sessionSlots(session).find((s) => s.id === ui.swap.slotId);
+  const swaps = { ...(session.swaps || {}) };
+  if (ui.swap.mode === 'today') {
+    if (exerciseId === permanentExerciseId(slot)) delete swaps[slot.id];
+    else swaps[slot.id] = exerciseId;
+  } else {
+    if (exerciseId === slot.defaultExercise) dropMeta('swap:' + slot.id);
+    else putMeta({ key: 'swap:' + slot.id, slotId: slot.id, exerciseId });
+    delete swaps[slot.id];
+  }
+  session.swaps = swaps;
+  save('sessions', session);
+  addToRole(slot.role, exerciseId);
+  forgetDrafts(slot.id);
+  toast(`${exercise(exerciseId).name}${ui.swap.mode === 'today' ? ' for today' : ' from now on'}`);
+  closeScreen();
+}
+
+function createFromForm() {
+  const name = document.getElementById('new-name').value.trim();
+  if (!name) { toast('Give the exercise a name'); return; }
+  const roleEl = document.getElementById('new-role');
+  const roleId = ui.view === 'swap'
+    ? sessionSlots(activeSession()).find((s) => s.id === ui.swap.slotId).role
+    : roleEl.value;
+  const id = createExercise(name, roleId,
+    document.getElementById('new-eq').value, Number(document.getElementById('new-inc').value));
+  if (ui.view === 'swap') pickSwap(id);
+  else pickAdd(id);
+}
+
+function pickAdd(exerciseId) {
+  const ex = exercise(exerciseId);
+  const [low, high] = ex.type === 'C' ? [8, 12] : [10, 15];
+  ui.add = { ...ui.add, exerciseId, creating: false, sets: 3, low, high };
+  show('add');
+}
+
+// The letter after the last one in a session, for a kept exercise's slot.
+function nextLetter(slots) {
+  const codes = slots.map((s) => s.labelP2).filter(Boolean).map((l) => l.charCodeAt(0));
+  return String.fromCharCode(Math.max(64, ...codes) + 1);
+}
+
+function confirmAdd() {
+  const session = activeSession();
+  const a = ui.add;
+  const ex = exercise(a.exerciseId);
+  const base = {
+    role: ex.role,
+    defaultExercise: ex.id,
+    primaryMuscle: muscleByRole[ex.role],
+    sets: { phase1: a.sets, phase2: a.sets },
+    repLow: a.low,
+    repHigh: a.high,
+    dropSetEligible: false,
+    userAdded: true,
+  };
+  if (a.mode === 'today') {
+    session.added = [...(session.added || []), { ...base, id: 'today-' + uid(), label: '+', labelP2: '+', oneOff: true }];
+    save('sessions', session);
+  } else {
+    const letter = nextLetter(templateSlots(session.templateId));
+    const id = 'user-' + uid();
+    putMeta({
+      ...base, key: 'slot:' + id, id, templateId: session.templateId,
+      label: letter + '1', labelP2: letter + '1', pairGroup: letter, createdAt: Date.now(),
+    });
+  }
+  toast(`${ex.name} added`);
+  ui.add = null;
+  show('session', { keepScroll: true });
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function changeExtraSets(slotId, delta) {
+  const session = activeSession();
+  const extra = { ...(session.extraSets || {}) };
+  extra[slotId] = Math.max(0, (extra[slotId] || 0) + delta);
+  session.extraSets = extra;
+  save('sessions', session);
 }
 
 function editDraft(key, change) {
@@ -956,7 +1367,7 @@ function logSet(key) {
     return;
   }
   const result = Engine.judgeSet(plan.target, d, plan.slot.repLow);
-  const existing = setLogFor(session.id, plan.slot.id, i);
+  const existing = setLogFor(session, plan, i);
   const rec = existing
     ? { ...existing, weight: d.weight, reps: d.reps, rir: d.rir, result }
     : {
@@ -965,7 +1376,7 @@ function logSet(key) {
         slotId: plan.slot.id,
         exerciseId: plan.ex.id,
         setIndex: i,
-        kind: plan.kind,
+        kind: kindOfRow(plan, i),
         targetWeight: plan.target.weight,
         targetReps: plan.target.reps,
         targetRir: plan.rir,
@@ -996,7 +1407,7 @@ function logSet(key) {
 
 function deleteSet(key) {
   const { session, plan, i } = planForKey(key);
-  const log = setLogFor(session.id, plan.slot.id, i);
+  const log = setLogFor(session, plan, i);
   if (!log) return;
   S.sets.splice(S.sets.indexOf(log), 1);
   remove('sets', log.id);
@@ -1014,12 +1425,12 @@ function finishSession() {
     hits: 0, misses: 0, firsts: 0, baselines: [], stalls: [],
   };
   for (const p of plans) {
-    for (const x of logs.filter((l) => l.slotId === p.slot.id)) {
+    for (const x of logs.filter((l) => l.slotId === p.slot.id && l.exerciseId === p.ex.id)) {
       const r = Engine.judgeSet(p.target, x, p.slot.repLow);
       summary[{ hit: 'hits', miss: 'misses', first: 'firsts' }[r]] += 1;
     }
     if (p.kind !== 'work') continue;
-    const first = setLogFor(session.id, p.slot.id, 0);
+    const first = setLogFor(session, p, 0);
     if (!first) continue;
     const entries = firstSetEntries(p.slot.id, p.ex.id).filter((e) => e.startedAt <= session.startedAt);
     const { baseline, results } = Engine.replayBaseline(entries, p.slot.repLow, p.slot.repHigh, p.ex.incrementKg);
@@ -1062,8 +1473,46 @@ document.addEventListener('click', (ev) => {
     case 't-plus': adjustTimer(30); return;
     case 't-skip': stopTimer(); return;
     case 'rest-edit': ui.restEdit = ui.restEdit === arg ? null : arg; render(); break;
-    case 'rest-minus': setRest(arg, Math.max(15, restFor(exerciseById[arg]) - 15)); render(); break;
-    case 'rest-plus': setRest(arg, Math.min(600, restFor(exerciseById[arg]) + 15)); render(); break;
+    case 'rest-minus': setRest(arg, Math.max(15, restFor(exercise(arg)) - 15)); render(); break;
+    case 'rest-plus': setRest(arg, Math.min(600, restFor(exercise(arg)) + 15)); render(); break;
+    case 'menu': ui.menuFor = ui.menuFor === arg ? null : arg; ui.panel = null; render(); break;
+    case 'panel': ui.panel = { kind: arg, slotId: key }; ui.menuFor = null; render(); break;
+    case 'panel-close': ui.panel = null; render(); break;
+    case 'edit-save': {
+      const name = document.getElementById('edit-name').value.trim();
+      if (!name) { toast('The name can’t be empty'); break; }
+      setExerciseFields(arg, { name, incrementKg: Number(document.getElementById('edit-inc').value) });
+      ui.panel = null;
+      render();
+      break;
+    }
+    case 'add-set': changeExtraSets(arg, 1); ui.menuFor = null; render(); break;
+    case 'remove-set': changeExtraSets(key.split(':')[0], -1); delete ui.drafts[key]; ui.openKey = null; render(); break;
+    case 'added-remove': {
+      const session = activeSession();
+      session.added = (session.added || []).filter((s) => s.id !== arg);
+      save('sessions', session);
+      forgetDrafts(arg);
+      ui.menuFor = null;
+      render();
+      break;
+    }
+    case 'swap-open': ui.swap = { slotId: arg, mode: 'today', all: false, creating: false }; openScreen('swap'); break;
+    case 'swap-mode': ui.swap.mode = arg; render(); break;
+    case 'swap-pick': pickSwap(arg); break;
+    case 'add-open': ui.add = { exerciseId: null, mode: 'today', creating: false }; openScreen('add'); break;
+    case 'add-pick': pickAdd(arg); break;
+    case 'add-back': ui.add = { ...ui.add, exerciseId: null }; show('add'); break;
+    case 'add-mode': ui.add.mode = arg; render(); break;
+    case 'add-sets': ui.add.sets = Math.min(10, Math.max(1, ui.add.sets + Number(arg))); render(); break;
+    case 'add-low': ui.add.low = Math.min(ui.add.high, Math.max(1, ui.add.low + Number(arg))); render(); break;
+    case 'add-high': ui.add.high = Math.min(50, Math.max(ui.add.low, ui.add.high + Number(arg))); render(); break;
+    case 'add-confirm': confirmAdd(); break;
+    case 'list-all': ui.swap.all = true; render(); break;
+    case 'new-ex': (ui.swap || ui.add).creating = true; render(); document.getElementById('new-name').focus(); break;
+    case 'new-ex-cancel': (ui.swap || ui.add).creating = false; render(); break;
+    case 'create-ex': createFromForm(); break;
+    case 'screen-close': closeScreen(); break;
     case 'start': startSession(arg); break;
     case 'resume': show('session', { scrollToNext: true }); break;
     case 'skip': if (arm('skip:' + arg)) skipSession(arg); break;
@@ -1093,13 +1542,20 @@ document.addEventListener('click', (ev) => {
 // Typed values update the draft without a re-render, so the keyboard stays up.
 document.addEventListener('input', (ev) => {
   const el = ev.target;
-  if (!el.dataset.field) return;
+  if (el.dataset.field === 'notes') { setExerciseFields(el.dataset.arg, { notes: el.value }); return; }
+  if (el.dataset.field !== 'weight' && el.dataset.field !== 'reps') return;
   const { session, plan, i } = planForKey(el.dataset.key);
   const d = { ...draftFor(plan, session, i) };
   const v = parseFloat(el.value.replace(',', '.'));
   if (el.dataset.field === 'weight') d.weight = Number.isFinite(v) ? v : null;
   else d.reps = Number.isFinite(v) ? Math.round(v) : 0;
   ui.drafts[el.dataset.key] = d;
+});
+
+// Picking equipment in the new-exercise form sets its usual weight step.
+document.addEventListener('change', (ev) => {
+  if (ev.target.id !== 'new-eq') return;
+  document.getElementById('new-inc').value = String(EQUIPMENT[ev.target.value][1]);
 });
 
 // Offline support. Skipped on file:// and anywhere service workers are absent.
