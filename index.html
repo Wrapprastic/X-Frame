@@ -287,6 +287,17 @@
   #timer.over .t-time small { color: var(--accent-ink); }
   #timer.over .t-row button, #timer.over .t-track { visibility: hidden; }
   @keyframes flash { from { opacity: 1; } to { opacity: .55; } }
+  #undo {
+    position: fixed; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 16px); z-index: 9;
+    max-width: 528px; margin: 0 auto; display: flex; align-items: center; gap: 12px;
+    padding: 6px 6px 6px 16px; border-radius: 14px; background: var(--ink); color: var(--bg); font-weight: 600;
+  }
+  #undo[hidden] { display: none; }
+  #undo .u-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #undo button { min-height: 48px; padding: 0 20px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  body.timing #undo { bottom: calc(env(safe-area-inset-bottom) + 100px); }
+  .home-nav { margin: 4px 0 8px; }
+  .home-nav h2 { margin: 0; font-size: 24px; }
   #toast {
     position: fixed; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 16px);
     max-width: 528px; margin: 0 auto; padding: 14px 16px; border-radius: 12px;
@@ -307,6 +318,7 @@
     <button data-act="t-skip">Skip</button>
   </div>
 </div>
+<div id="undo" hidden><span class="u-text">Set logged</span><button data-act="undo-log">Undo</button></div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="seed.js"></script>
 <script src="engine.js"></script>
@@ -419,6 +431,36 @@ function toast(msg) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+// After a set is logged, an Undo bar shows for a few seconds. Undo removes
+// the set and any rest it started.
+let undoTimer;
+function offerUndo(setId, exName, startedTimer) {
+  ui.undo = { setId, startedTimer };
+  const el = document.getElementById('undo');
+  el.querySelector('.u-text').textContent = `${exName}: set logged`;
+  el.hidden = false;
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(hideUndo, 6000);
+}
+
+function hideUndo() {
+  ui.undo = null;
+  document.getElementById('undo').hidden = true;
+}
+
+function undoLastSet() {
+  const u = ui.undo;
+  hideUndo();
+  if (!u) return;
+  const set = S.sets.find((x) => x.id === u.setId);
+  if (!set) return;
+  S.sets.splice(S.sets.indexOf(set), 1);
+  remove('sets', set.id);
+  if (u.startedTimer) stopTimer();
+  toast('Set removed');
+  render();
 }
 
 const blockById = (id) => S.blocks.find((b) => b.id === id);
@@ -632,42 +674,75 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- Program state ----------
 
-function statusOf(templateId) {
-  const logs = S.sessions.filter((s) =>
-    s.blockId === S.program.blockId && s.week === S.program.week && s.templateId === templateId);
-  for (const status of ['finished', 'skipped', 'in-progress']) {
+// A session can be run more than once in a week (Redo), so a week can hold
+// several logs for one template. One in progress wins, then a finished one.
+const weekLogs = (templateId, blockId, week) =>
+  S.sessions.filter((s) => s.blockId === blockId && s.week === week && s.templateId === templateId);
+
+function statusOf(templateId, blockId = S.program.blockId, week = S.program.week) {
+  const logs = weekLogs(templateId, blockId, week);
+  for (const status of ['in-progress', 'finished', 'skipped']) {
     if (logs.some((l) => l.status === status)) return status;
   }
   return 'todo';
 }
 
+const weekDone = (blockId, week) =>
+  SEED.sessions.every((t) => ['finished', 'skipped'].includes(statusOf(t.id, blockId, week)));
+
 const nextTemplate = () => SEED.sessions.find((t) => statusOf(t.id) === 'todo');
 
-// A week ends when all six sessions are finished or skipped. After Phase 1
-// week 8 comes Phase 2 week 1; after Phase 2 week 8 the program is complete.
+// The next block in time after this one, if there is one yet.
+const blockAfter = (b) =>
+  S.blocks.filter((x) => x.startedAt > b.startedAt).sort((x, y) => x.startedAt - y.startedAt)[0];
+
+// Phase 2 after a Phase 1 block: the one already started, or a new one.
+function phase2After(b) {
+  const nb = blockAfter(b);
+  return nb && nb.type === 'phase2' ? nb : newBlock('phase2');
+}
+
+// A week ends when all six sessions are finished or skipped. The program then
+// moves past every week already done, so running an old week again brings it
+// back to where it was. After Phase 1 week 8 comes Phase 2 week 1; after any
+// other block, home asks what runs next.
 function advanceIfWeekDone() {
   const p = S.program;
-  const done = SEED.sessions.every((t) => ['finished', 'skipped'].includes(statusOf(t.id)));
-  if (!done) return;
-  const b = currentBlock();
-  if (p.week < b.lengthWeeks) {
-    p.week += 1;
-  } else if (b.type === 'phase1') {
-    p.blockId = newBlock('phase2').id;
-    p.week = 1;
-  } else {
-    p.complete = true;
+  for (let guard = 0; guard < 60 && !p.complete && weekDone(p.blockId, p.week); guard++) {
+    const b = currentBlock();
+    if (p.week < b.lengthWeeks) {
+      p.week += 1;
+    } else if (b.type === 'phase1') {
+      p.blockId = phase2After(b).id;
+      p.week = 1;
+    } else {
+      p.complete = true;
+    }
   }
   save('meta', p);
 }
 
-function startSession(templateId) {
+// The week the home screen shows. A week of Phase 2 shown ahead of time has
+// no block yet; it gets one the first time something happens in it.
+const viewedWeek = () => ui.browse ||
+  { blockId: S.program.blockId, type: currentBlock().type, week: S.program.week };
+
+function resolveWeek(w) {
+  if (w.blockId) return w.blockId;
+  const id = phase2After(blockById(w.after)).id;
+  if (ui.browse === w) ui.browse = { ...w, blockId: id };
+  return id;
+}
+
+// Starting a session anywhere makes that week the current one.
+function startSession(templateId, w = viewedWeek()) {
   if (activeSession()) return;
+  const blockId = resolveWeek(w);
   const s = {
     id: uid(),
     templateId,
-    blockId: S.program.blockId,
-    week: S.program.week,
+    blockId,
+    week: w.week,
     startedAt: Date.now(),
     finishedAt: null,
     status: 'in-progress',
@@ -675,23 +750,83 @@ function startSession(templateId) {
   };
   S.sessions.push(s);
   save('sessions', s);
-  S.program.activeSessionId = s.id;
+  Object.assign(S.program, { activeSessionId: s.id, blockId, week: w.week, complete: false, placed: true });
   save('meta', S.program);
+  ui.browse = null;
   ui.drafts = {};
   ui.openKey = null;
   show('session', { scrollToNext: true });
 }
 
-function skipSession(templateId) {
+function skipSession(templateId, w = viewedWeek()) {
   const now = Date.now();
   const s = {
-    id: uid(), templateId, blockId: S.program.blockId, week: S.program.week,
+    id: uid(), templateId, blockId: resolveWeek(w), week: w.week,
     startedAt: now, finishedAt: now, status: 'skipped', weightOverrides: {},
   };
   S.sessions.push(s);
   save('sessions', s);
+  S.program.placed = true;
   advanceIfWeekDone();
   toast(`${templateById[templateId].name} skipped`);
+  render();
+}
+
+function unskipSession(templateId, w = viewedWeek()) {
+  for (const s of weekLogs(templateId, w.blockId, w.week)) {
+    if (s.status !== 'skipped') continue;
+    S.sessions.splice(S.sessions.indexOf(s), 1);
+    remove('sessions', s.id);
+  }
+  toast(`${templateById[templateId].name} is back on`);
+  render();
+}
+
+// Back into a finished session, to log or fix sets. Its week becomes the
+// current one until it is finished again.
+function reopenSession(id) {
+  if (activeSession()) return;
+  const s = sessionById(id);
+  s.status = 'in-progress';
+  s.finishedAt = null;
+  save('sessions', s);
+  Object.assign(S.program, { activeSessionId: s.id, blockId: s.blockId, week: s.week, complete: false });
+  save('meta', S.program);
+  ui.browse = null;
+  ui.summary = null;
+  ui.rowMenu = null;
+  ui.drafts = {};
+  ui.openKey = null;
+  show('session', { scrollToNext: true });
+}
+
+// Every week the home screen can step through: the weeks of each block that
+// is current or has sessions in it, then Phase 2 ahead of time while Phase 1
+// is the latest block.
+function programWeeks() {
+  const blocks = [...S.blocks].sort((a, b) => a.startedAt - b.startedAt);
+  const out = [];
+  for (const b of blocks) {
+    if (b.id !== S.program.blockId && !S.sessions.some((s) => s.blockId === b.id)) continue;
+    for (let w = 1; w <= b.lengthWeeks; w++) out.push({ blockId: b.id, type: b.type, week: w });
+  }
+  const last = blocks[blocks.length - 1];
+  if (last.type === 'phase1') {
+    for (let w = 1; w <= 8; w++) out.push({ blockId: null, after: last.id, type: 'phase2', week: w });
+  }
+  return out;
+}
+
+const sameWeek = (a, b) => a.week === b.week && (a.blockId ? a.blockId === b.blockId : !b.blockId && a.after === b.after);
+
+function stepWeek(delta) {
+  const weeks = programWeeks();
+  const at = weeks.findIndex((w) => sameWeek(w, viewedWeek()));
+  const next = weeks[Math.min(weeks.length - 1, Math.max(0, at + delta))];
+  const cur = { blockId: S.program.blockId, week: S.program.week };
+  ui.browse = next.blockId === cur.blockId && next.week === cur.week ? null : next;
+  ui.rowMenu = null;
+  ui.armed = null;
   render();
 }
 
@@ -881,6 +1016,9 @@ const ui = {
   swap: null, // the swap screen: { slotId, mode: 'today' | 'permanent', all, creating }
   add: null, // the add-exercise screen: { exerciseId, mode: 'today' | 'keep', sets, low, high, all, creating }
   maintWeeks: 8, // the length picked for a maintenance block
+  browse: null, // the week home is showing, when it isn't the current one
+  rowMenu: null, // the home row whose options are open
+  undo: null, // the set the Undo bar would remove
   hist: null, // history: { origin, stack: [{ page, id }], edit, draft, chartPt, volIdx }
   summary: null,
   scrollToNext: false,
@@ -955,46 +1093,91 @@ function render() {
   }
 }
 
+// The first launch asks where the user is up to, in place of starting at
+// Phase 1 week 1 unasked.
+function placeCard() {
+  const typeOpts = ['phase1', 'phase2'].map((t) => `<option value="${t}">${BLOCK_NAMES[t]}</option>`).join('');
+  const weekOpts = [1, 2, 3, 4, 5, 6, 7, 8].map((w) => `<option value="${w}">Week ${w}</option>`).join('');
+  return `<div class="card">
+    <h3>Where are you up to?</h3>
+    <p class="meta">Pick the week you're on. You can move to any week later with the arrows, or in Settings.</p>
+    <div class="lab">Phase</div><select id="place-type">${typeOpts}</select>
+    <div class="lab">Week</div><select id="place-week">${weekOpts}</select>
+    <button class="btn primary big" data-act="place">Start here</button>
+  </div>`;
+}
+
 function homeView() {
-  const block = currentBlock();
   const active = activeSession();
-  const next = nextTemplate();
-  let hero;
-  if (S.program.complete) {
-    hero = nextBlockChooser();
+  const w = viewedWeek();
+  const isCurrent = !ui.browse;
+  const weeks = programWeeks();
+  const at = weeks.findIndex((x) => sameWeek(x, w));
+  const placing = !S.program.placed && !S.sessions.length;
+
+  let hero = '';
+  if (placing) {
+    hero = placeCard();
   } else if (active) {
-    hero = `<div class="card"><div class="eyebrow">In progress</div>
+    hero = `<div class="card"><div class="eyebrow">In progress · ${esc(weekTitle(blockById(active.blockId), active.week))}</div>
       <h3>${esc(templateById[active.templateId].name)}</h3>
       <button class="btn primary big" data-act="resume">Resume</button></div>`;
-  } else if (next) {
-    const count = plansFor({ templateId: next.id, blockId: block.id, week: S.program.week, startedAt: Infinity, id: '' }).length;
-    hero = `<div class="card"><div class="eyebrow">Up next</div>
-      <h3>${esc(next.name)}</h3>
-      <div class="meta">${count} exercises</div>
-      <button class="btn primary big" data-act="start" data-arg="${next.id}">Start</button></div>`;
+  } else if (!isCurrent) {
+    hero = `<div class="note">You're on ${esc(weekTitle(currentBlock(), S.program.week))}. Starting a session here moves you to this week.
+      <button class="inline-link" data-act="browse-now">Back to your week</button></div>`;
+  } else if (S.program.complete) {
+    hero = nextBlockChooser();
+  } else {
+    const next = nextTemplate();
+    if (next) {
+      const count = plansFor({ templateId: next.id, blockId: w.blockId, week: w.week, startedAt: Infinity, id: '' }).length;
+      hero = `<div class="card"><div class="eyebrow">Up next</div>
+        <h3>${esc(next.name)}</h3>
+        <div class="meta">${count} exercises</div>
+        <button class="btn primary big" data-act="start" data-arg="${next.id}">Start</button></div>`;
+    }
   }
 
   const rows = SEED.sessions.map((t) => {
-    const st = statusOf(t.id);
+    const st = w.blockId ? statusOf(t.id, w.blockId, w.week) : 'todo';
+    const logs = w.blockId ? weekLogs(t.id, w.blockId, w.week) : [];
+    const finished = logs.filter((l) => l.status === 'finished').sort((a, b) => b.startedAt - a.startedAt)[0];
     let right = '';
-    if (st === 'finished') right = '<span class="pill hit">Done</span>';
-    else if (st === 'skipped') right = '<span class="pill">Skipped</span>';
-    else if (st === 'in-progress') right = '<span class="pill now">In progress</span>';
-    else if (!active && !S.program.complete) {
+    let menu = '';
+    if (st === 'in-progress') {
+      right = '<span class="pill now">In progress</span>';
+    } else if (st === 'finished') {
+      right = `<span class="pill hit">Done</span>
+        <button class="btn" data-act="row-menu" data-arg="${t.id}" aria-label="Options for ${esc(t.name)}">•••</button>`;
+      if (ui.rowMenu === t.id) {
+        menu = `<div class="menu-row">
+          ${active ? '' : `<button class="btn" data-act="reopen" data-arg="${finished.id}">Reopen</button>
+          <button class="btn" data-act="start" data-arg="${t.id}">Redo</button>`}
+          <button class="btn" data-act="hist-open-session" data-arg="${finished.id}">See sets</button>
+        </div>
+        ${active ? '' : '<div class="meta">Reopen goes back into that session. Redo runs it again as a new session.</div>'}`;
+      }
+    } else if (st === 'skipped') {
+      right = `<span class="pill">Skipped</span>${active ? '' : `<button class="btn" data-act="unskip" data-arg="${t.id}">Undo</button>`}`;
+    } else if (!active && !placing) {
       const armed = ui.armed === 'skip:' + t.id;
       right = `<button class="btn ${armed ? 'armed' : ''}" data-act="skip" data-arg="${t.id}">${armed ? 'Skip it' : 'Skip'}</button>
         <button class="btn" data-act="start" data-arg="${t.id}">Start</button>`;
     }
-    return `<div class="week-row"><div class="name">${esc(t.name)}</div>${right}</div>`;
+    return `<div class="week-row"><div class="name">${esc(t.name)}</div>${right}</div>${menu}`;
   }).join('');
 
   return `<div class="wrap">
     <div class="top"><div><button class="link" data-act="hist-open">History</button></div>
       <div class="mid eyebrow">X Frame</div>
       <button class="link right" data-act="settings">Settings</button></div>
-    <h2>${esc(weekTitle(block, S.program.week))}</h2>
-    ${hero || ''}
-    <div class="card"><div class="eyebrow">This week</div>${rows}</div>
+    ${placing ? '' : `<div class="week-nav home-nav">
+      <button class="btn" data-act="browse" data-arg="-1" ${at <= 0 ? 'disabled' : ''} aria-label="Earlier week">‹</button>
+      <div><h2>${esc(weekTitle(w, w.week))}</h2><div class="eyebrow">${isCurrent ? 'Your current week' : 'Looking at another week'}</div></div>
+      <button class="btn" data-act="browse" data-arg="1" ${at >= weeks.length - 1 ? 'disabled' : ''} aria-label="Later week">›</button>
+    </div>`}
+    ${hero}
+    ${placing ? '' : `<div class="card"><div class="eyebrow">${isCurrent ? 'This week' : 'That week'}</div>${rows}</div>`}
   </div>`;
 }
 
@@ -1103,6 +1286,9 @@ function exerciseHead(p, session) {
       <button class="btn" data-act="panel" data-arg="notes" data-key="${slotId}">Notes</button>
       <button class="btn" data-act="panel" data-arg="edit" data-key="${slotId}">Edit</button>
       <button class="btn" data-act="hist-open-ex" data-arg="${p.ex.id}">History</button>
+      ${S.sets.some((x) => x.sessionId === session.id && x.slotId === slotId && x.exerciseId === p.ex.id)
+        ? `<button class="btn ${ui.armed === 'clear:' + slotId ? 'armed' : ''}" data-act="clear-sets" data-arg="${slotId}">${ui.armed === 'clear:' + slotId ? 'Clear all its sets' : 'Clear sets'}</button>`
+        : ''}
       ${p.slot.oneOff && !anyLogged ? `<button class="btn" data-act="added-remove" data-arg="${slotId}">Remove</button>` : ''}
     </div>`;
   }
@@ -1167,14 +1353,14 @@ function setRow(plan, session, i, paired, nextKey) {
       ? `${fmtKg(log.weight)} kg × ${log.reps}`
       : `${fmtKg(d.weight)} kg × as many as you can`;
     right = log
-      ? (open ? '<div></div>' : '<div class="badge drop">Drop</div>')
+      ? (open ? '<div></div>' : `<button class="badge drop" data-act="open" data-key="${key}">Drop</button>`)
       : `<button class="btn primary done" data-act="open" data-key="${key}">Enter</button>`;
   } else if (log && !open) {
     const result = Engine.judgeSet(plan.target, log, plan.slot.repLow);
     const easy = Engine.easierThanPlanned(result, log.rir, plan.rir);
     vals = `${fmtKg(log.weight)} kg × ${log.reps} · RIR ${fmtRir(log.rir)}${easy ? '<small>Easier than planned</small>' : ''}`;
     const word = { hit: 'Hit', miss: 'Miss', first: 'Logged' }[result];
-    right = `<div class="badge ${result}">${word}</div>`;
+    right = `<button class="badge ${result}" data-act="open" data-key="${key}" aria-label="${word}: change or delete this set">${word}</button>`;
   } else {
     vals = `${d.weight == null ? '—' : fmtKg(d.weight)} kg × ${d.reps} · RIR ${fmtRir(d.rir)}`;
     right = log
@@ -1243,6 +1429,7 @@ function summaryView() {
     ${s.baselines.length ? `<div class="card"><div class="eyebrow">New baselines</div>${list(s.baselines)}</div>` : ''}
     ${s.stalls.length ? `<div class="card"><div class="eyebrow">Stalled</div>${list(s.stalls)}</div>` : ''}
     <button class="btn primary big" data-act="summary-done">Done</button>
+    <button class="btn big" data-act="reopen" data-arg="${s.sessionId}">Reopen session</button>
   </div>`;
 }
 
@@ -1905,7 +2092,9 @@ function logSet(key) {
   // The drop set follows the last work set straight away, and has no rest
   // after it either.
   const dropNext = plan.drop && i === plan.n - 1;
-  if (!existing && !isDrop && !dropNext) startTimer(restFor(plan.ex), plan.ex.name);
+  const rests = !existing && !isDrop && !dropNext;
+  if (rests) startTimer(restFor(plan.ex), plan.ex.name);
+  if (!existing) offerUndo(rec.id, plan.ex.name, rests);
   if (d.applyRest) {
     session.weightOverrides = { ...session.weightOverrides, [plan.slot.id]: d.weight };
     // Unlogged drafts for this slot pick up the new weight.
@@ -1936,6 +2125,7 @@ function finishSession() {
   const logs = S.sets.filter((x) => x.sessionId === session.id);
   const summary = {
     name: templateById[session.templateId].name,
+    sessionId: session.id,
     hits: 0, misses: 0, firsts: 0, baselines: [], stalls: [],
   };
   for (const p of plans) {
@@ -1967,9 +2157,19 @@ function finishSession() {
 
 function moveTo(type, week) {
   if (activeSession()) return;
-  if (type !== currentBlock().type) S.program.blockId = newBlock(type).id;
+  if (type !== currentBlock().type) {
+    // Moving within the same run (Phase 1 to Phase 2 or back) reuses the
+    // neighbouring block of that type; anything else starts a new block.
+    const sorted = [...S.blocks].sort((a, b) => a.startedAt - b.startedAt);
+    const at = sorted.indexOf(currentBlock());
+    const near = [sorted[at - 1], sorted[at + 1]].find((b) => b && b.type === type);
+    S.program.blockId = (near || (type === 'phase2' && currentBlock().type === 'phase1'
+      ? phase2After(currentBlock()) : newBlock(type))).id;
+  }
   S.program.week = week;
   S.program.complete = false;
+  S.program.placed = true;
+  ui.browse = null;
   save('meta', S.program);
   toast(`Moved to ${BLOCK_NAMES[type]} · Week ${week}`);
   show('home');
@@ -1981,8 +2181,39 @@ document.addEventListener('click', (ev) => {
   const { act, key, arg } = el.dataset;
   wakeAudio();
   syncWakeLock();
-  if (ui.armed && !['skip', 'finish', 'del', 'h-del'].includes(act)) ui.armed = null;
+  if (ui.armed && !['skip', 'finish', 'del', 'h-del', 'clear-sets'].includes(act)) ui.armed = null;
   switch (act) {
+    case 'undo-log': undoLastSet(); return;
+    case 'browse': stepWeek(Number(arg)); break;
+    case 'browse-now': ui.browse = null; ui.rowMenu = null; render(); break;
+    case 'row-menu': ui.rowMenu = ui.rowMenu === arg ? null : arg; render(); break;
+    case 'reopen': reopenSession(arg); break;
+    case 'unskip': unskipSession(arg); break;
+    case 'hist-open-session': openHistory('home', 'session', arg); break;
+    case 'place':
+      moveTo(document.getElementById('place-type').value, Number(document.getElementById('place-week').value));
+      break;
+    case 'clear-sets': {
+      if (!arm('clear:' + arg)) break;
+      const session = activeSession();
+      const slot = sessionSlots(session).find((s) => s.id === arg);
+      const exId = exerciseFor(slot, session).id;
+      for (const x of S.sets.filter((y) => y.sessionId === session.id && y.slotId === arg && y.exerciseId === exId)) {
+        S.sets.splice(S.sets.indexOf(x), 1);
+        remove('sets', x.id);
+      }
+      if ((session.weightOverrides || {})[arg] != null) {
+        session.weightOverrides = { ...session.weightOverrides };
+        delete session.weightOverrides[arg];
+        save('sessions', session);
+      }
+      forgetDrafts(arg);
+      hideUndo();
+      ui.menuFor = null;
+      toast(`${exercise(exId).name} cleared`);
+      render();
+      break;
+    }
     case 't-minus': adjustTimer(-30); return;
     case 't-plus': adjustTimer(30); return;
     case 't-skip': stopTimer(); return;
@@ -2089,7 +2320,7 @@ document.addEventListener('click', (ev) => {
       moveTo(document.getElementById('set-type').value, Number(document.getElementById('set-week').value));
       break;
     case 'finish': if (!arg || arm('finish')) finishSession(); break;
-    case 'summary-done': ui.summary = null; show('home'); break;
+    case 'summary-done': ui.summary = null; ui.browse = null; show('home'); break;
     case 'open':
       if (ui.openKey === key) { ui.openKey = null; } else { ui.openKey = key; }
       render();
