@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X Frame engine tests</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  .pass { color: #176b2c; }
+  .fail { color: #b3261e; font-weight: 600; }
+  h1 { font-size: 18px; }
+  pre { margin: 0; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1 id="summary">Running…</h1>
+<div id="out"></div>
+<script src="seed.js"></script>
+<script src="engine.js"></script>
+<script>
+  const out = document.getElementById('out');
+  let passed = 0, failed = 0;
+
+  function check(name, actual, expected) {
+    // Object keys are sorted so key order never fails a test.
+    const sorted = (_, v) => (v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v);
+    const a = JSON.stringify(actual, sorted), e = JSON.stringify(expected, sorted);
+    const ok = a === e;
+    ok ? passed++ : failed++;
+    const line = document.createElement('pre');
+    line.className = ok ? 'pass' : 'fail';
+    line.textContent = (ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : `\n     expected ${e}\n     got      ${a}`);
+    out.appendChild(line);
+  }
+
+  const E = Engine;
+
+  // The worked example from the doc: Flat DB press, 8-12 reps, 2.5 kg.
+  {
+    const logs = [
+      { weight: 30, reps: 10 },
+      { weight: 30, reps: 11 },
+      { weight: 27.5, reps: 12 },
+      { weight: 30, reps: 13 },
+      { weight: 32.5, reps: 9 },
+    ];
+    const { baseline, results } = E.replayBaseline(logs, 8, 12, 2.5);
+    check('worked example: targets', results.map((r) => r.target), [
+      { weight: null, reps: 8 },
+      { weight: 30, reps: 11 },
+      { weight: 30, reps: 12 },
+      { weight: 30, reps: 12 },
+      { weight: 32.5, reps: 8 },
+    ]);
+    check('worked example: results', results.map((r) => r.result), ['first', 'hit', 'miss', 'hit', 'hit']);
+    check('worked example: baseline after week 5', baseline, { weight: 32.5, reps: 9 });
+    check('worked example: week 6 target', E.nextTarget(baseline, 8, 12, 2.5), { weight: 32.5, reps: 10 });
+  }
+
+  // Setting the next target.
+  check('reaching the top of the range is not enough to add weight',
+    E.nextTarget({ weight: 30, reps: 12 }, 8, 12, 2.5), { weight: 30, reps: 13 });
+  check('light isolation jumps one increment (10 -> 12.5 kg)',
+    E.nextTarget({ weight: 10, reps: 16 }, 10, 15, 2.5), { weight: 12.5, reps: 10 });
+  check('machine stack rounds up to 5 kg (60 -> 65 kg)',
+    E.nextTarget({ weight: 60, reps: 13 }, 8, 12, 5), { weight: 65, reps: 8 });
+  check('5% that rounds back to the same weight still adds an increment',
+    E.nextTarget({ weight: 100, reps: 13 }, 8, 12, 5), { weight: 105, reps: 8 });
+  check('no baseline: blank weight, bottom of range',
+    E.nextTarget(null, 10, 15, 2.5), { weight: null, reps: 10 });
+
+  // Rounding.
+  check('round up 31.5 to 2.5 kg', E.roundUpToIncrement(31.5, 2.5), 32.5);
+  check('round up an exact step stays put', E.roundUpToIncrement(32.5, 2.5), 32.5);
+  check('round down 16.25 to 2.5 kg', E.roundDownToIncrement(16.25, 2.5), 15);
+
+  // Judging a logged set.
+  const t = { weight: 30, reps: 12 };
+  check('hit: on target', E.judgeSet(t, { weight: 30, reps: 12 }, 8), 'hit');
+  check('hit: heavier with reps in range', E.judgeSet(t, { weight: 32.5, reps: 9 }, 8), 'hit');
+  check('miss: heavier below the range', E.judgeSet(t, { weight: 32.5, reps: 7 }, 8), 'miss');
+  check('miss: lighter with more reps', E.judgeSet(t, { weight: 27.5, reps: 15 }, 8), 'miss');
+  check('miss: right weight, short on reps', E.judgeSet(t, { weight: 30, reps: 11 }, 8), 'miss');
+
+  // A bad day never lowers the target.
+  {
+    const { baseline, results } = E.replayBaseline(
+      [{ weight: 30, reps: 10 }, { weight: 25, reps: 6 }, { weight: 20, reps: 8 }], 8, 12, 2.5);
+    check('two misses leave the baseline alone', baseline, { weight: 30, reps: 10 });
+    check('same target returns after a miss', results.map((r) => r.target.reps), [8, 11, 11]);
+  }
+
+  // "Make this my baseline" accepts a lower set.
+  {
+    const { baseline } = E.replayBaseline(
+      [{ weight: 30, reps: 10 }, { weight: 25, reps: 9, makeBaseline: true }], 8, 12, 2.5);
+    check('make this my baseline', baseline, { weight: 25, reps: 9 });
+  }
+
+  // Phase 2 start: baseline weight, bottom of the range.
+  {
+    const { results, baseline } = E.replayBaseline(
+      [{ weight: 30, reps: 12 }, { weight: 30, reps: 8, phaseStart: true }], 8, 12, 2.5);
+    check('phase 2 week 1 target', results[1].target, { weight: 30, reps: 8 });
+    check('phase 2 week 1 hit resets the baseline reps', baseline, { weight: 30, reps: 8 });
+  }
+
+  // Easier than planned: a note only.
+  check('RIR 3 against a target of 0-1 is easier than planned', E.easierThanPlanned('hit', 3, [0, 1]), true);
+  check('RIR 2 against a target of 0-1 is not', E.easierThanPlanned('hit', 2, [0, 1]), false);
+  check('a miss is never easier than planned', E.easierThanPlanned('miss', 5, [0, 1]), false);
+
+  // Sets per block and week.
+  const slot = (p1, p2) => ({ sets: { phase1: p1, phase2: p2 } });
+  check('deload halves rounding up: 4, 3, 2 -> 2, 2, 1',
+    [4, 3, 2].map((n) => E.setsFor(slot(n, n), 'phase1', 8)), [2, 2, 1]);
+  check('phase 2 uses the P2 column', E.setsFor(slot(3, 4), 'phase2', 1), 4);
+  check('maintenance: 20% fewer, min 1: 4, 3, 2, 1 -> 3, 2, 2, 1',
+    [4, 3, 2, 1].map((n) => E.setsFor(slot(n, n), 'maintenance', 1)), [3, 2, 2, 1]);
+  check('a Phase 2-only slot has no sets in Phase 1', E.setsFor(slot(0, 4), 'phase1', 1), 0);
+
+  // RIR table.
+  check('Phase 1 week 1 compound', E.targetRir(SEED.rir, 'phase1', 1, 'C'), [2, 2]);
+  check('Phase 2 week 2 isolation', E.targetRir(SEED.rir, 'phase2', 2, 'I'), [0, 1]);
+  check('deload week', E.targetRir(SEED.rir, 'phase2', 8, 'C'), [3, 4]);
+  check('maintenance uses the Phase 2 table', E.targetRir(SEED.rir, 'maintenance', 1, 'I'), [1, 1]);
+
+  // Drop sets.
+  check('drop sets in weeks 6 and 7 only', [5, 6, 7, 8].map((w) => E.dropSetsOn('phase1', w)), [false, true, true, false]);
+  check('no drop sets in Phase 1 without intensifiers', E.dropSetsOn('phase1-no-intensifiers', 6), false);
+  check('drop set at 50%, rounded down (32.5 -> 15)', E.dropSetWeight(32.5, 2.5), 15);
+  check('drop set on a machine (45 -> 20)', E.dropSetWeight(45, 5), 20);
+
+  // Stalls.
+  check('three misses in a row stall', E.isStalled(['hit', 'miss', 'miss', 'miss']), true);
+  check('a hit clears the stall', E.isStalled(['miss', 'miss', 'miss', 'hit']), false);
+  check('two misses do not stall', E.isStalled(['miss', 'miss']), false);
+
+  check('Epley: 100 kg x 10', E.epley(100, 10), 133.33);
+
+  // Seed data against the doc's Weekly volume table.
+  for (const [blockType, col] of [['phase1', 0], ['phase2', 1]]) {
+    const vol = E.weeklyVolume(SEED.sessions, blockType, 1);
+    const planned = Object.fromEntries(Object.entries(SEED.plannedVolume).map(([m, v]) => [m, v[col]]));
+    check(`${blockType} weekly volume matches the doc`, vol, planned);
+  }
+
+  // Seed integrity.
+  {
+    const exIds = new Set(SEED.exercises.map((e) => e.id));
+    check('exercise ids are unique', exIds.size, SEED.exercises.length);
+    const roleById = Object.fromEntries(SEED.roles.map((r) => [r.id, r]));
+    const bad = [];
+    for (const s of SEED.sessions) for (const sl of s.slots) {
+      if (!roleById[sl.role]) bad.push(`${sl.id}: no role ${sl.role}`);
+      else if (!roleById[sl.role].exerciseIds.includes(sl.defaultExercise)) bad.push(`${sl.id}: ${sl.defaultExercise} not in role`);
+    }
+    check('every slot default belongs to its role', bad, []);
+    check('six sessions in order', SEED.sessions.map((s) => s.name),
+      ['Chest Focused Push', 'Pull A', 'Legs', 'Shoulder Focused Push', 'Pull B', 'Hamstring Focused Legs']);
+    const slotIds = SEED.sessions.flatMap((s) => s.slots.map((sl) => sl.id));
+    check('slot ids are unique', new Set(slotIds).size, slotIds.length);
+  }
+
+  const summary = document.getElementById('summary');
+  summary.textContent = failed ? `${failed} failed, ${passed} passed` : `All ${passed} passed`;
+  summary.className = failed ? 'fail' : 'pass';
+</script>
+</body>
+</html>
