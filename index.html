@@ -6,6 +6,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="X Frame">
+<meta name="theme-color" content="#0e0e10">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
 <title>X Frame</title>
 <style>
   :root {
@@ -903,6 +906,11 @@ document.addEventListener('input', (ev) => {
   else d.reps = Number.isFinite(v) ? Math.round(v) : 0;
   ui.drafts[el.dataset.key] = d;
 });
+
+// Offline support. Skipped on file:// and anywhere service workers are absent.
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 
 load().then(() => {
   if (activeSession()) show('session', { scrollToNext: true });

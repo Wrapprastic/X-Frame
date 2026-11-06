@@ -34,6 +34,22 @@ say so and ask rather than quietly deviating.
 - Large touch targets, one-handed use. Logging a set that hits its target is
   one tap.
 
+## Releasing
+
+- Hosted on GitHub Pages from `main`, at https://wrapprastic.github.io/X-Frame/
+  (repo https://github.com/Wrapprastic/X-Frame). Use relative paths only,
+  because the app is served from `/X-Frame/`, not the site root.
+- Any commit that changes a shipped file (`index.html`, `seed.js`, `engine.js`,
+  the manifest or an icon) must also bump `CACHE_VERSION` in `sw.js`. The
+  service worker is cache-first, so without the bump every installed copy keeps
+  running the old app.
+- A new shipped file must be added to `APP_FILES` in `sw.js`, or it will be
+  missing offline.
+- Once the app is in use, the IndexedDB data on the phone is real training
+  history. Schema changes need an upgrade path that keeps it.
+- When testing locally, unregister the localhost service worker and delete its
+  caches after editing, or the old cached files are what runs.
+
 ## When the spec changes
 
 Update the doc in the same piece of work as the code. The spec must never drift
